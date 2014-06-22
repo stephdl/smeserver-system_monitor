@@ -1,0 +1,1200 @@
+#!/usr/bin/perl -wT
+
+#----------------------------------------------------------------------
+# heading	: Administration
+# description	: System Monitoring
+# navigation	: 4000 4050
+#
+# Distributed under the GPL license.
+#----------------------------------------------------------------------
+
+package esmith;
+
+#use strict;
+use CGI ':all';
+use CGI::Carp qw(fatalsToBrowser);
+
+use esmith::cgi;
+use esmith::config;
+use esmith::util;
+use esmith::db;
+
+BEGIN
+{
+    $ENV {'PATH'} = '';
+    $ENV {'SHELL'} = '/bin/bash';
+    delete $ENV {'ENV'};
+}
+esmith::util::setRealToEffective ();
+
+$scriptname = 'systemmonitor';
+
+$RRDDIR = '/var/lib/rrdsm';
+$RRDFILE = 'systemmonitor';
+$HOSTFILE = 'host_';
+$IFACEFILE = 'iface_';
+$PROCFILE = 'processors';
+$SENSORSFILE = 'sensors';
+$UPSFILE = 'ups';
+$SAMBAUSERRRD = 'samba';
+
+my %conf;   
+tie %conf, 'esmith::config';
+my $hosts = db_get_prop(\%conf, $RRDFILE, 'hosts') || "gateway";
+my $pingscale = db_get_prop(\%conf, $RRDFILE, 'pingscale') || "300";
+my $maxping = db_get_prop(\%conf, $RRDFILE, 'maxping') || "400";
+$maxping -= 0.01;
+
+$sechour = 24000;
+$secday = 120000;
+$secweek = 720000;
+$secmonth = 2880000;
+$secyear = 34560000;
+
+$graphwidth = 401;
+$graphheight = 160;
+
+$TITLE = 'System Monitor';
+$MINUTE = 'Minute';
+$HOUR = 'Hour';
+$HOURLY = 'Hourly';
+$DAY = 'Day';
+$DAILY = 'Daily';
+$WEEKLY = 'Weekly';
+$MONTHLY = 'Monthly';
+$GRAPH = 'Graph';
+$YEARLY = 'Yearly';
+$MAXIMAL = 'Maximal';
+$AVERAGE = 'Average';
+$CURRENT = 'Current';
+
+$CPU = "CPU";
+$LOADCPU = "Load/CPU";
+$MEM = "Memory";
+$TEMP = "Temp";
+$UPS = "UPS";
+$PROCQUE = "Proc/Que";
+$HD = "Drives";
+$VOLTAGE = "Volt";
+$FAN = "Fan";
+$UPTIME = "Uptime";
+$SAMBA = "Users Samba";
+
+my $RRDCMD = "/usr/bin/rrdtool graph - -a 'PNG' -w '401' -h '200' ";
+
+$CPU_GRAPH  = "-b '1000' -l '0' ";
+$CPU_GRAPH .= "-t '%CPU<D> Utilitization' ";
+$CPU_GRAPH .= "-v '%CPU' ";
+$CPU_GRAPH .= "'DEF:minsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu<D>:MIN' ";
+$CPU_GRAPH .= "'DEF:avgsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu<D>:AVERAGE' ";
+$CPU_GRAPH .= "'DEF:maxsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu<D>:MAX' ";
+$CPU_GRAPH .= "'DEF:minusercpu=$RRDDIR/$PROCFILE.rrd:usercpu<D>:MIN' ";
+$CPU_GRAPH .= "'DEF:avgusercpu=$RRDDIR/$PROCFILE.rrd:usercpu<D>:AVERAGE' ";
+$CPU_GRAPH .= "'DEF:maxusercpu=$RRDDIR/$PROCFILE.rrd:usercpu<D>:MAX' ";
+$CPU_GRAPH .= "'DEF:minnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu<D>:MIN' ";
+$CPU_GRAPH .= "'DEF:avgnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu<D>:AVERAGE' ";
+$CPU_GRAPH .= "'DEF:maxnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu<D>:MAX' ";
+$CPU_GRAPH .= "'CDEF:avgadjsystemcpu=avgsystemcpu,100,*' ";
+$CPU_GRAPH .= "'CDEF:maxadjsystemcpu=maxsystemcpu,100,*' ";
+$CPU_GRAPH .= "'CDEF:avgadjusercpu=avgusercpu,100,*' ";
+$CPU_GRAPH .= "'CDEF:maxadjusercpu=maxusercpu,100,*' ";
+$CPU_GRAPH .= "'CDEF:avgadjnicecpu=avgnicecpu,100,*' ";
+$CPU_GRAPH .= "'CDEF:maxadjnicecpu=maxnicecpu,100,*' ";
+$CPU_GRAPH .= "'COMMENT:        ' ";
+$CPU_GRAPH .= "'AREA:avgadjsystemcpu#000080: System     ' ";
+$CPU_GRAPH .= "'STACK:avgadjusercpu#00FF00: User     ' ";
+$CPU_GRAPH .= "'STACK:avgadjnicecpu#006600: Nice' ";
+$CPU_GRAPH .= "'COMMENT:\\n' ";
+$CPU_GRAPH .= "'COMMENT: Max\\:    ' ";
+$CPU_GRAPH .= "'GPRINT:maxadjsystemcpu:MAX:%7.2lf %% ' ";
+$CPU_GRAPH .= "'GPRINT:maxadjusercpu:MAX:   %7.2lf %% ' ";
+$CPU_GRAPH .= "'GPRINT:maxadjnicecpu:MAX:  %7.2lf %% ' ";
+$CPU_GRAPH .= "'COMMENT:\\n' ";
+$CPU_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$CPU_GRAPH .= "'GPRINT:avgadjsystemcpu:AVERAGE:%7.2lf %% ' ";
+$CPU_GRAPH .= "'GPRINT:avgadjusercpu:AVERAGE:   %7.2lf %% ' ";
+$CPU_GRAPH .= "'GPRINT:avgadjnicecpu:AVERAGE:  %7.2lf %% ' ";
+$CPU_GRAPH .= "'COMMENT:\\n' ";
+$CPU_GRAPH .= "'COMMENT:Last\\:    ' ";
+$CPU_GRAPH .= "'GPRINT:avgadjsystemcpu:LAST:%7.2lf %% ' ";
+$CPU_GRAPH .= "'GPRINT:avgadjusercpu:LAST:   %7.2lf %% ' ";
+$CPU_GRAPH .= "'GPRINT:avgadjnicecpu:LAST:  %7.2lf %% ' ";
+
+$CPU0_GRAPH  = "-b '1000' -l '0' ";
+$CPU0_GRAPH .= "-t '%CPU0<D> Utilitization' ";
+$CPU0_GRAPH .= "-v '%CPU0' ";
+$CPU0_GRAPH .= "'DEF:minsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu0<D>:MIN' ";
+$CPU0_GRAPH .= "'DEF:avgsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu0<D>:AVERAGE' ";
+$CPU0_GRAPH .= "'DEF:maxsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu0<D>:MAX' ";
+$CPU0_GRAPH .= "'DEF:minusercpu=$RRDDIR/$PROCFILE.rrd:usercpu0<D>:MIN' ";
+$CPU0_GRAPH .= "'DEF:avgusercpu=$RRDDIR/$PROCFILE.rrd:usercpu0<D>:AVERAGE' ";
+$CPU0_GRAPH .= "'DEF:maxusercpu=$RRDDIR/$PROCFILE.rrd:usercpu0<D>:MAX' ";
+$CPU0_GRAPH .= "'DEF:minnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu0<D>:MIN' ";
+$CPU0_GRAPH .= "'DEF:avgnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu0<D>:AVERAGE' ";
+$CPU0_GRAPH .= "'DEF:maxnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu0<D>:MAX' ";
+$CPU0_GRAPH .= "'CDEF:avgadjsystemcpu=avgsystemcpu,100,*' ";
+$CPU0_GRAPH .= "'CDEF:maxadjsystemcpu=maxsystemcpu,100,*' ";
+$CPU0_GRAPH .= "'CDEF:avgadjusercpu=avgusercpu,100,*' ";
+$CPU0_GRAPH .= "'CDEF:maxadjusercpu=maxusercpu,100,*' ";
+$CPU0_GRAPH .= "'CDEF:avgadjnicecpu=avgnicecpu,100,*' ";
+$CPU0_GRAPH .= "'CDEF:maxadjnicecpu=maxnicecpu,100,*' ";
+$CPU0_GRAPH .= "'COMMENT:        ' ";
+$CPU0_GRAPH .= "'AREA:avgadjsystemcpu#000080: System     ' ";
+$CPU0_GRAPH .= "'STACK:avgadjusercpu#00FF00: User     ' ";
+$CPU0_GRAPH .= "'STACK:avgadjnicecpu#006600: Nice' ";
+$CPU0_GRAPH .= "'COMMENT:\\n' ";
+$CPU0_GRAPH .= "'COMMENT: Max\\:    ' ";
+$CPU0_GRAPH .= "'GPRINT:maxadjsystemcpu:MAX:%7.2lf %% ' ";
+$CPU0_GRAPH .= "'GPRINT:maxadjusercpu:MAX:   %7.2lf %% ' ";
+$CPU0_GRAPH .= "'GPRINT:maxadjnicecpu:MAX:  %7.2lf %% ' ";
+$CPU0_GRAPH .= "'COMMENT:\\n' ";
+$CPU0_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$CPU0_GRAPH .= "'GPRINT:avgadjsystemcpu:AVERAGE:%7.2lf %% ' ";
+$CPU0_GRAPH .= "'GPRINT:avgadjusercpu:AVERAGE:   %7.2lf %% ' ";
+$CPU0_GRAPH .= "'GPRINT:avgadjnicecpu:AVERAGE:  %7.2lf %% ' ";
+$CPU0_GRAPH .= "'COMMENT:\\n' ";
+$CPU0_GRAPH .= "'COMMENT:Last\\:    ' ";
+$CPU0_GRAPH .= "'GPRINT:avgadjsystemcpu:LAST:%7.2lf %% ' ";
+$CPU0_GRAPH .= "'GPRINT:avgadjusercpu:LAST:   %7.2lf %% ' ";
+$CPU0_GRAPH .= "'GPRINT:avgadjnicecpu:LAST:  %7.2lf %% ' ";
+
+$CPU1_GRAPH  = "-b '1000' -l '0' ";
+$CPU1_GRAPH .= "-t '%CPU1<D> Utilitization' ";
+$CPU1_GRAPH .= "-v '%CPU1' ";
+$CPU1_GRAPH .= "'DEF:minsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu1<D>:MIN' ";
+$CPU1_GRAPH .= "'DEF:avgsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu1<D>:AVERAGE' ";
+$CPU1_GRAPH .= "'DEF:maxsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu1<D>:MAX' ";
+$CPU1_GRAPH .= "'DEF:minusercpu=$RRDDIR/$PROCFILE.rrd:usercpu1<D>:MIN' ";
+$CPU1_GRAPH .= "'DEF:avgusercpu=$RRDDIR/$PROCFILE.rrd:usercpu1<D>:AVERAGE' ";
+$CPU1_GRAPH .= "'DEF:maxusercpu=$RRDDIR/$PROCFILE.rrd:usercpu1<D>:MAX' ";
+$CPU1_GRAPH .= "'DEF:minnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu1<D>:MIN' ";
+$CPU1_GRAPH .= "'DEF:avgnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu1<D>:AVERAGE' ";
+$CPU1_GRAPH .= "'DEF:maxnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu1<D>:MAX' ";
+$CPU1_GRAPH .= "'CDEF:avgadjsystemcpu=avgsystemcpu,100,*' ";
+$CPU1_GRAPH .= "'CDEF:maxadjsystemcpu=maxsystemcpu,100,*' ";
+$CPU1_GRAPH .= "'CDEF:avgadjusercpu=avgusercpu,100,*' ";
+$CPU1_GRAPH .= "'CDEF:maxadjusercpu=maxusercpu,100,*' ";
+$CPU1_GRAPH .= "'CDEF:avgadjnicecpu=avgnicecpu,100,*' ";
+$CPU1_GRAPH .= "'CDEF:maxadjnicecpu=maxnicecpu,100,*' ";
+$CPU1_GRAPH .= "'COMMENT:        ' ";
+$CPU1_GRAPH .= "'AREA:avgadjsystemcpu#000080: System     ' ";
+$CPU1_GRAPH .= "'STACK:avgadjusercpu#00FF00: User     ' ";
+$CPU1_GRAPH .= "'STACK:avgadjnicecpu#006600: Nice' ";
+$CPU1_GRAPH .= "'COMMENT:\\n' ";
+$CPU1_GRAPH .= "'COMMENT: Max\\:    ' ";
+$CPU1_GRAPH .= "'GPRINT:maxadjsystemcpu:MAX:%7.2lf %% ' ";   
+$CPU1_GRAPH .= "'GPRINT:maxadjusercpu:MAX:   %7.2lf %% ' ";
+$CPU1_GRAPH .= "'GPRINT:maxadjnicecpu:MAX:  %7.2lf %% ' ";
+$CPU1_GRAPH .= "'COMMENT:\\n' ";
+$CPU1_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$CPU1_GRAPH .= "'GPRINT:avgadjsystemcpu:AVERAGE:%7.2lf %% ' ";
+$CPU1_GRAPH .= "'GPRINT:avgadjusercpu:AVERAGE:   %7.2lf %% ' ";
+$CPU1_GRAPH .= "'GPRINT:avgadjnicecpu:AVERAGE:  %7.2lf %% ' ";
+$CPU1_GRAPH .= "'COMMENT:\\n' ";
+$CPU1_GRAPH .= "'COMMENT:Last\\:    ' ";
+$CPU1_GRAPH .= "'GPRINT:avgadjsystemcpu:LAST:%7.2lf %% ' ";
+$CPU1_GRAPH .= "'GPRINT:avgadjusercpu:LAST:   %7.2lf %% ' ";
+$CPU1_GRAPH .= "'GPRINT:avgadjnicecpu:LAST:  %7.2lf %% ' ";
+
+$CPU2_GRAPH  = "-b '1000' -l '0' ";
+$CPU2_GRAPH .= "-t '%CPU2<D> Utilitization' ";
+$CPU2_GRAPH .= "-v '%CPU2' ";
+$CPU2_GRAPH .= "'DEF:minsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu2<D>:MIN' ";
+$CPU2_GRAPH .= "'DEF:avgsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu2<D>:AVERAGE' ";
+$CPU2_GRAPH .= "'DEF:maxsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu2<D>:MAX' ";
+$CPU2_GRAPH .= "'DEF:minusercpu=$RRDDIR/$PROCFILE.rrd:usercpu2<D>:MIN' ";
+$CPU2_GRAPH .= "'DEF:avgusercpu=$RRDDIR/$PROCFILE.rrd:usercpu2<D>:AVERAGE' ";
+$CPU2_GRAPH .= "'DEF:maxusercpu=$RRDDIR/$PROCFILE.rrd:usercpu2<D>:MAX' ";
+$CPU2_GRAPH .= "'DEF:minnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu2<D>:MIN' ";
+$CPU2_GRAPH .= "'DEF:avgnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu2<D>:AVERAGE' ";
+$CPU2_GRAPH .= "'DEF:maxnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu2<D>:MAX' ";
+$CPU2_GRAPH .= "'CDEF:avgadjsystemcpu=avgsystemcpu,100,*' ";
+$CPU2_GRAPH .= "'CDEF:maxadjsystemcpu=maxsystemcpu,100,*' ";
+$CPU2_GRAPH .= "'CDEF:avgadjusercpu=avgusercpu,100,*' ";
+$CPU2_GRAPH .= "'CDEF:maxadjusercpu=maxusercpu,100,*' ";
+$CPU2_GRAPH .= "'CDEF:avgadjnicecpu=avgnicecpu,100,*' ";
+$CPU2_GRAPH .= "'CDEF:maxadjnicecpu=maxnicecpu,100,*' ";
+$CPU2_GRAPH .= "'COMMENT:        ' ";
+$CPU2_GRAPH .= "'AREA:avgadjsystemcpu#000080: System     ' ";
+$CPU2_GRAPH .= "'STACK:avgadjusercpu#00FF00: User     ' ";
+$CPU2_GRAPH .= "'STACK:avgadjnicecpu#006600: Nice' ";
+$CPU2_GRAPH .= "'COMMENT:\\n' ";
+$CPU2_GRAPH .= "'COMMENT: Max\\:    ' ";
+$CPU2_GRAPH .= "'GPRINT:maxadjsystemcpu:MAX:%7.2lf %% ' ";   
+$CPU2_GRAPH .= "'GPRINT:maxadjusercpu:MAX:   %7.2lf %% ' ";
+$CPU2_GRAPH .= "'GPRINT:maxadjnicecpu:MAX:  %7.2lf %% ' ";
+$CPU2_GRAPH .= "'COMMENT:\\n' ";
+$CPU2_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$CPU2_GRAPH .= "'GPRINT:avgadjsystemcpu:AVERAGE:%7.2lf %% ' ";
+$CPU2_GRAPH .= "'GPRINT:avgadjusercpu:AVERAGE:   %7.2lf %% ' ";
+$CPU2_GRAPH .= "'GPRINT:avgadjnicecpu:AVERAGE:  %7.2lf %% ' ";
+$CPU2_GRAPH .= "'COMMENT:\\n' ";
+$CPU2_GRAPH .= "'COMMENT:Last\\:    ' ";
+$CPU2_GRAPH .= "'GPRINT:avgadjsystemcpu:LAST:%7.2lf %% ' ";
+$CPU2_GRAPH .= "'GPRINT:avgadjusercpu:LAST:   %7.2lf %% ' ";
+$CPU2_GRAPH .= "'GPRINT:avgadjnicecpu:LAST:  %7.2lf %% ' ";
+
+$CPU3_GRAPH  = "-b '1000' -l '0' ";
+$CPU3_GRAPH .= "-t '%CPU3<D> Utilitization' ";
+$CPU3_GRAPH .= "-v '%CPU3' ";
+$CPU3_GRAPH .= "'DEF:minsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu3<D>:MIN' ";
+$CPU3_GRAPH .= "'DEF:avgsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu3<D>:AVERAGE' ";
+$CPU3_GRAPH .= "'DEF:maxsystemcpu=$RRDDIR/$PROCFILE.rrd:systemcpu3<D>:MAX' ";
+$CPU3_GRAPH .= "'DEF:minusercpu=$RRDDIR/$PROCFILE.rrd:usercpu3<D>:MIN' ";
+$CPU3_GRAPH .= "'DEF:avgusercpu=$RRDDIR/$PROCFILE.rrd:usercpu3<D>:AVERAGE' ";
+$CPU3_GRAPH .= "'DEF:maxusercpu=$RRDDIR/$PROCFILE.rrd:usercpu3<D>:MAX' ";
+$CPU3_GRAPH .= "'DEF:minnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu3<D>:MIN' ";
+$CPU3_GRAPH .= "'DEF:avgnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu3<D>:AVERAGE' ";
+$CPU3_GRAPH .= "'DEF:maxnicecpu=$RRDDIR/$PROCFILE.rrd:nicecpu3<D>:MAX' ";
+$CPU3_GRAPH .= "'CDEF:avgadjsystemcpu=avgsystemcpu,100,*' ";
+$CPU3_GRAPH .= "'CDEF:maxadjsystemcpu=maxsystemcpu,100,*' ";
+$CPU3_GRAPH .= "'CDEF:avgadjusercpu=avgusercpu,100,*' ";
+$CPU3_GRAPH .= "'CDEF:maxadjusercpu=maxusercpu,100,*' ";
+$CPU3_GRAPH .= "'CDEF:avgadjnicecpu=avgnicecpu,100,*' ";
+$CPU3_GRAPH .= "'CDEF:maxadjnicecpu=maxnicecpu,100,*' ";
+$CPU3_GRAPH .= "'COMMENT:        ' ";
+$CPU3_GRAPH .= "'AREA:avgadjsystemcpu#000080: System     ' ";
+$CPU3_GRAPH .= "'STACK:avgadjusercpu#00FF00: User     ' ";
+$CPU3_GRAPH .= "'STACK:avgadjnicecpu#006600: Nice' ";
+$CPU3_GRAPH .= "'COMMENT:\\n' ";
+$CPU3_GRAPH .= "'COMMENT: Max\\:    ' ";
+$CPU3_GRAPH .= "'GPRINT:maxadjsystemcpu:MAX:%7.2lf %% ' ";   
+$CPU3_GRAPH .= "'GPRINT:maxadjusercpu:MAX:   %7.2lf %% ' ";
+$CPU3_GRAPH .= "'GPRINT:maxadjnicecpu:MAX:  %7.2lf %% ' ";
+$CPU3_GRAPH .= "'COMMENT:\\n' ";
+$CPU3_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$CPU3_GRAPH .= "'GPRINT:avgadjsystemcpu:AVERAGE:%7.2lf %% ' ";
+$CPU3_GRAPH .= "'GPRINT:avgadjusercpu:AVERAGE:   %7.2lf %% ' ";
+$CPU3_GRAPH .= "'GPRINT:avgadjnicecpu:AVERAGE:  %7.2lf %% ' ";
+$CPU3_GRAPH .= "'COMMENT:\\n' ";
+$CPU3_GRAPH .= "'COMMENT:Last\\:    ' ";
+$CPU3_GRAPH .= "'GPRINT:avgadjsystemcpu:LAST:%7.2lf %% ' ";
+$CPU3_GRAPH .= "'GPRINT:avgadjusercpu:LAST:   %7.2lf %% ' ";
+$CPU3_GRAPH .= "'GPRINT:avgadjnicecpu:LAST:  %7.2lf %% ' ";
+
+$LOADCPU_GRAPH  = "-b '1000' -l '0' ";
+$LOADCPU_GRAPH .= "-t 'System Load / %CPU' ";
+$LOADCPU_GRAPH .= "-v 'Load*30 / %CPU' ";
+$LOADCPU_GRAPH .= "'DEF:minload=$RRDDIR/$RRDFILE.rrd:load:MIN' ";
+$LOADCPU_GRAPH .= "'DEF:avgload=$RRDDIR/$RRDFILE.rrd:load:AVERAGE' ";
+$LOADCPU_GRAPH .= "'DEF:maxload=$RRDDIR/$RRDFILE.rrd:load:MAX' ";
+$LOADCPU_GRAPH .= "'DEF:mintotalcpu=$RRDDIR/$RRDFILE.rrd:totalcpu:MIN' ";
+$LOADCPU_GRAPH .= "'DEF:avgtotalcpu=$RRDDIR/$RRDFILE.rrd:totalcpu:AVERAGE' ";
+$LOADCPU_GRAPH .= "'DEF:maxtotalcpu=$RRDDIR/$RRDFILE.rrd:totalcpu:MAX' ";
+$LOADCPU_GRAPH .= "'CDEF:avgadjload=avgload,30,*' ";
+$LOADCPU_GRAPH .= "'CDEF:maxadjload=maxload,30,*' ";
+$LOADCPU_GRAPH .= "'CDEF:diffadjload=maxadjload,avgadjload,-' ";
+$LOADCPU_GRAPH .= "'CDEF:avgadjtotalcpu=avgtotalcpu,100,*' ";
+$LOADCPU_GRAPH .= "'CDEF:maxadjtotalcpu=maxtotalcpu,100,*' ";
+$LOADCPU_GRAPH .= "'COMMENT:       ' ";
+$LOADCPU_GRAPH .= "'AREA:avgadjload#00FF00: Load' ";
+$LOADCPU_GRAPH .= "<'STACK:diffadjload#006400:   '> ";
+$LOADCPU_GRAPH .= "{'COMMENT:   '} ";
+$LOADCPU_GRAPH .= "'LINE1:avgadjtotalcpu#1000FF: CPU' ";
+$LOADCPU_GRAPH .= "<'LINE1:maxadjtotalcpu#000080: '> ";
+$LOADCPU_GRAPH .= "'COMMENT:\\n' ";
+$LOADCPU_GRAPH .= "'COMMENT: Max\\:   ' ";
+$LOADCPU_GRAPH .= "'GPRINT:maxload:MAX:%7.3lf   ' ";
+$LOADCPU_GRAPH .= "'GPRINT:maxadjtotalcpu:MAX:<  > %7.2lf %% ' ";
+$LOADCPU_GRAPH .= "'COMMENT:\\n' ";
+$LOADCPU_GRAPH .= "'COMMENT: Avg\\:   ' ";
+$LOADCPU_GRAPH .= "'GPRINT:avgload:AVERAGE:%7.3lf   ' ";
+$LOADCPU_GRAPH .= "'GPRINT:avgadjtotalcpu:AVERAGE:<  > %7.2lf %% ' ";
+$LOADCPU_GRAPH .= "'COMMENT:\\n' ";
+$LOADCPU_GRAPH .= "'COMMENT:Last\\:   ' ";
+$LOADCPU_GRAPH .= "'GPRINT:avgload:LAST:%7.3lf   ' ";
+$LOADCPU_GRAPH .= "'GPRINT:avgadjtotalcpu:LAST:<  > %7.2lf %% ' ";
+$LOADCPU_MAX  = 'week month year';
+
+$PROCQUE_GRAPH  = "-b '1000' -l '0' ";
+$PROCQUE_GRAPH .= "-t 'System Processes / Run Queue' ";
+$PROCQUE_GRAPH .= "-v 'Processes / Queue*10' ";
+$PROCQUE_GRAPH .= "'DEF:minplist=$RRDDIR/$RRDFILE.rrd:plist:MIN' ";
+$PROCQUE_GRAPH .= "'DEF:avgplist=$RRDDIR/$RRDFILE.rrd:plist:AVERAGE' ";
+$PROCQUE_GRAPH .= "'DEF:maxplist=$RRDDIR/$RRDFILE.rrd:plist:MAX' ";
+$PROCQUE_GRAPH .= "'DEF:minrunq=$RRDDIR/$RRDFILE.rrd:runq:MIN' ";
+$PROCQUE_GRAPH .= "'DEF:avgrunq=$RRDDIR/$RRDFILE.rrd:runq:AVERAGE' ";
+$PROCQUE_GRAPH .= "'DEF:maxrunq=$RRDDIR/$RRDFILE.rrd:runq:MAX' ";
+$PROCQUE_GRAPH .= "'CDEF:avgadjrunq=avgrunq,10,*' ";
+$PROCQUE_GRAPH .= "'CDEF:maxadjrunq=maxrunq,10,*' ";
+$PROCQUE_GRAPH .= "'CDEF:diffplist=maxplist,avgplist,-' ";
+$PROCQUE_GRAPH .= "'COMMENT:       ' ";
+$PROCQUE_GRAPH .= "'AREA:avgplist#00FF00: Processes' ";
+$PROCQUE_GRAPH .= "<'STACK:diffplist#006400:   '> ";
+$PROCQUE_GRAPH .= "{'COMMENT:   '} ";
+$PROCQUE_GRAPH .= "'LINE1:avgadjrunq#1000FF: Run Queue' ";
+$PROCQUE_GRAPH .= "<'LINE1:maxadjrunq#000080: '> ";
+$PROCQUE_GRAPH .= "'COMMENT:\\n' ";
+$PROCQUE_GRAPH .= "'COMMENT: Max\\:     ' ";
+$PROCQUE_GRAPH .= "'GPRINT:maxplist:MAX:%7.1lf   ' ";
+$PROCQUE_GRAPH .= "'GPRINT:maxrunq:MAX:<  >       %7.3lf   ' ";
+$PROCQUE_GRAPH .= "'COMMENT:\\n' ";
+$PROCQUE_GRAPH .= "'COMMENT: Avg\\:     ' ";
+$PROCQUE_GRAPH .= "'GPRINT:avgplist:AVERAGE:%7.1lf   ' ";
+$PROCQUE_GRAPH .= "'GPRINT:avgrunq:AVERAGE:<  >       %7.3lf   ' ";
+$PROCQUE_GRAPH .= "'COMMENT:\\n' ";
+$PROCQUE_GRAPH .= "'COMMENT:Last\\:     ' ";
+$PROCQUE_GRAPH .= "'GPRINT:avgplist:LAST:%7.1lf   ' ";
+$PROCQUE_GRAPH .= "'GPRINT:avgrunq:LAST:<  >       %7.3lf   ' ";
+$PROCQUE_MAX = 'week month year';
+
+$MEM_GRAPH  = "-b '1024' -l '0' ";
+$MEM_GRAPH .= "-t 'Memory Utilization' ";
+$MEM_GRAPH .= "-v 'Bytes' ";
+$MEM_GRAPH .= "'DEF:minmemused=$RRDDIR/$RRDFILE.rrd:memused:MIN' ";
+$MEM_GRAPH .= "'DEF:avgmemused=$RRDDIR/$RRDFILE.rrd:memused:AVERAGE' ";
+$MEM_GRAPH .= "'DEF:maxmemused=$RRDDIR/$RRDFILE.rrd:memused:MAX' ";
+$MEM_GRAPH .= "'DEF:minmembuffers=$RRDDIR/$RRDFILE.rrd:membuffers:MIN' ";
+$MEM_GRAPH .= "'DEF:avgmembuffers=$RRDDIR/$RRDFILE.rrd:membuffers:AVERAGE' ";
+$MEM_GRAPH .= "'DEF:maxmembuffers=$RRDDIR/$RRDFILE.rrd:membuffers:MAX' ";
+$MEM_GRAPH .= "'DEF:minmemcached=$RRDDIR/$RRDFILE.rrd:memcached:MIN' ";
+$MEM_GRAPH .= "'DEF:avgmemcached=$RRDDIR/$RRDFILE.rrd:memcached:AVERAGE' ";
+$MEM_GRAPH .= "'DEF:maxmemcached=$RRDDIR/$RRDFILE.rrd:memcached:MAX' ";
+$MEM_GRAPH .= "'DEF:minmemactualfree=$RRDDIR/$RRDFILE.rrd:memactualfree:MIN' ";
+$MEM_GRAPH .= "'DEF:avgmemactualfree=$RRDDIR/$RRDFILE.rrd:memactualfree:AVERAGE' ";
+$MEM_GRAPH .= "'DEF:maxmemactualfree=$RRDDIR/$RRDFILE.rrd:memactualfree:MAX' ";
+$MEM_GRAPH .= "'DEF:minswapused=$RRDDIR/$RRDFILE.rrd:swapused:MIN' ";
+$MEM_GRAPH .= "'DEF:avgswapused=$RRDDIR/$RRDFILE.rrd:swapused:AVERAGE' ";
+$MEM_GRAPH .= "'DEF:maxswapused=$RRDDIR/$RRDFILE.rrd:swapused:MAX' ";
+$MEM_GRAPH .= "'COMMENT:        ' ";
+$MEM_GRAPH .= "'AREA:avgmemused#000080: Used   ' ";
+$MEM_GRAPH .= "'STACK:avgmembuffers#1000FF: Buffers   ' ";
+$MEM_GRAPH .= "'STACK:avgmemcached#006600: Cache     ' ";
+$MEM_GRAPH .= "'STACK:avgmemactualfree#00FF00: Free     ' ";
+$MEM_GRAPH .= "'LINE2:avgswapused#FF0000: Swap' ";
+$MEM_GRAPH .= "'COMMENT:\\n' ";
+$MEM_GRAPH .= "'COMMENT: Max\\:  ' ";
+$MEM_GRAPH .= "'GPRINT:maxmemused:MAX:%7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:maxmembuffers:MAX:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:maxmemcached:MAX:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:maxmemactualfree:MAX:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:maxswapused:MAX:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'COMMENT:\\n' ";
+$MEM_GRAPH .= "'COMMENT: Avg\\:  ' ";
+$MEM_GRAPH .= "'GPRINT:avgmemused:AVERAGE:%7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgmembuffers:AVERAGE:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgmemcached:AVERAGE:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgmemactualfree:AVERAGE:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgswapused:AVERAGE:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'COMMENT:\\n' ";
+$MEM_GRAPH .= "'COMMENT: Min\\:  ' ";
+$MEM_GRAPH .= "'GPRINT:minmemused:MIN:%7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:minmembuffers:MIN:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:minmemcached:MIN:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:minmemactualfree:MIN:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:minswapused:MIN:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'COMMENT:\\n' ";
+$MEM_GRAPH .= "'COMMENT:Last\\:  ' ";
+$MEM_GRAPH .= "'GPRINT:avgmemused:LAST:%7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgmembuffers:LAST:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgmemcached:LAST:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgmemactualfree:LAST:  %7.1lf %sb' ";
+$MEM_GRAPH .= "'GPRINT:avgswapused:LAST:  %7.1lf %sb' ";
+
+$MEM2_GRAPH  = "-b '1024' -l '0' ";
+$MEM2_GRAPH .= "-t 'Memory Used (RAM / Swap)' ";
+$MEM2_GRAPH .= "-v 'Bytes' ";
+$MEM2_GRAPH .= "'DEF:minmemused=$RRDDIR/$RRDFILE.rrd:memused:MIN' ";
+$MEM2_GRAPH .= "'DEF:avgmemused=$RRDDIR/$RRDFILE.rrd:memused:AVERAGE' ";
+$MEM2_GRAPH .= "'DEF:maxmemused=$RRDDIR/$RRDFILE.rrd:memused:MAX' ";
+$MEM2_GRAPH .= "'DEF:minswapused=$RRDDIR/$RRDFILE.rrd:swapused:MIN' ";
+$MEM2_GRAPH .= "'DEF:avgswapused=$RRDDIR/$RRDFILE.rrd:swapused:AVERAGE' ";
+$MEM2_GRAPH .= "'DEF:maxswapused=$RRDDIR/$RRDFILE.rrd:swapused:MAX' ";
+$MEM2_GRAPH .= "'CDEF:diffmemused=maxmemused,avgmemused,-' ";
+$MEM2_GRAPH .= "'COMMENT:     ' ";
+$MEM2_GRAPH .= "'AREA:avgmemused#00FF00: Memory' ";
+$MEM2_GRAPH .= "<'STACK:diffmemused#006400:   '> ";
+$MEM2_GRAPH .= "{'COMMENT:   '} ";
+$MEM2_GRAPH .= "'LINE1:avgswapused#1000FF: Swap' ";
+$MEM2_GRAPH .= "<'LINE1:maxswapused#000080: '> ";
+$MEM2_GRAPH .= "'COMMENT:\\n' ";
+$MEM2_GRAPH .= "'COMMENT: Max\\:  ' ";
+$MEM2_GRAPH .= "'GPRINT:maxmemused:MAX:%7.1lf %sb' ";
+$MEM2_GRAPH .= "'GPRINT:maxswapused:MAX:<  >   %7.1lf %sb' ";
+$MEM2_GRAPH .= "'COMMENT:\\n' ";
+$MEM2_GRAPH .= "'COMMENT: Avg\\:  ' ";
+$MEM2_GRAPH .= "'GPRINT:avgmemused:AVERAGE:%7.1lf %sb' ";
+$MEM2_GRAPH .= "'GPRINT:avgswapused:AVERAGE:<  >   %7.1lf %sb' ";
+$MEM2_GRAPH .= "'COMMENT:\\n' ";
+$MEM2_GRAPH .= "'COMMENT:Last\\:  ' ";
+$MEM2_GRAPH .= "'GPRINT:avgmemused:LAST:%7.1lf %sb' ";
+$MEM2_GRAPH .= "'GPRINT:avgswapused:LAST:<  >   %7.1lf %sb' ";
+$MEM2_MAX = 'week month year';
+
+$HD_GRAPH  = "-b '1024' -l '0' ";
+$HD_GRAPH .= "-t 'Hard Drive Usage' ";
+$HD_GRAPH .= "-v 'Bytes' ";
+$HD_GRAPH .= "'DEF:minhdused=$RRDDIR/$RRDFILE.rrd:hdused:MIN' ";
+$HD_GRAPH .= "'DEF:avghdused=$RRDDIR/$RRDFILE.rrd:hdused:AVERAGE' ";
+$HD_GRAPH .= "'DEF:maxhdused=$RRDDIR/$RRDFILE.rrd:hdused:MAX' ";
+$HD_GRAPH .= "'DEF:minhdfree=$RRDDIR/$RRDFILE.rrd:hdfree:MIN' ";
+$HD_GRAPH .= "'DEF:avghdfree=$RRDDIR/$RRDFILE.rrd:hdfree:AVERAGE' ";
+$HD_GRAPH .= "'DEF:maxhdfree=$RRDDIR/$RRDFILE.rrd:hdfree:MAX' ";
+$HD_GRAPH .= "'CDEF:diffhdused=maxhdused,avghdused,-' ";
+$HD_GRAPH .= "'COMMENT:       ' ";
+$HD_GRAPH .= "'AREA:avghdused#000080: Used     ' ";
+$HD_GRAPH .= "'STACK:avghdfree#00FF00: Free' ";
+$HD_GRAPH .= "'COMMENT:\\n' ";
+$HD_GRAPH .= "'COMMENT: Max\\:  ' ";
+$HD_GRAPH .= "'GPRINT:maxhdused:MAX:%7.1lf %sb' ";
+$HD_GRAPH .= "'GPRINT:maxhdfree:MAX:  %7.1lf %sb' ";
+$HD_GRAPH .= "'COMMENT:\\n' ";
+$HD_GRAPH .= "'COMMENT: Avg\\:  ' ";
+$HD_GRAPH .= "'GPRINT:avghdused:AVERAGE:%7.1lf %sb' ";
+$HD_GRAPH .= "'GPRINT:avghdfree:AVERAGE:  %7.1lf %sb' ";
+$HD_GRAPH .= "'COMMENT:\\n' ";
+$HD_GRAPH .= "'COMMENT: Min\\:  ' ";
+$HD_GRAPH .= "'GPRINT:minhdused:MIN:%7.1lf %sb' ";
+$HD_GRAPH .= "'GPRINT:minhdfree:MIN:  %7.1lf %sb' ";
+$HD_GRAPH .= "'COMMENT:\\n' ";
+$HD_GRAPH .= "'COMMENT:Last\\:  ' ";
+$HD_GRAPH .= "'GPRINT:avghdused:LAST:%7.1lf %sb' ";
+$HD_GRAPH .= "'GPRINT:avghdfree:LAST:  %7.1lf %sb' ";
+
+$HD2_GRAPH  = "-b '1024' -l '0' ";
+$HD2_GRAPH .= "-t 'Hard Drive Usage for <D>' ";
+$HD2_GRAPH .= "-v 'Bytes' ";
+$HD2_GRAPH .= "'DEF:minhdused=$RRDDIR/drive_<D>.rrd:hdused:MIN' ";
+$HD2_GRAPH .= "'DEF:avghdused=$RRDDIR/drive_<D>.rrd:hdused:AVERAGE' ";
+$HD2_GRAPH .= "'DEF:maxhdused=$RRDDIR/drive_<D>.rrd:hdused:MAX' ";
+$HD2_GRAPH .= "'DEF:minhdfree=$RRDDIR/drive_<D>.rrd:hdfree:MIN' ";
+$HD2_GRAPH .= "'DEF:avghdfree=$RRDDIR/drive_<D>.rrd:hdfree:AVERAGE' ";
+$HD2_GRAPH .= "'DEF:maxhdfree=$RRDDIR/drive_<D>.rrd:hdfree:MAX' ";
+$HD2_GRAPH .= "'CDEF:diffhdused=maxhdused,avghdused,-' ";
+$HD2_GRAPH .= "'COMMENT:       ' ";
+$HD2_GRAPH .= "'AREA:avghdused#000080: Used     ' ";
+$HD2_GRAPH .= "'STACK:avghdfree#00FF00: Free' ";
+$HD2_GRAPH .= "'COMMENT:\\n' ";
+$HD2_GRAPH .= "'COMMENT: Max\\:  ' ";
+$HD2_GRAPH .= "'GPRINT:maxhdused:MAX:%7.1lf %sb' ";
+$HD2_GRAPH .= "'GPRINT:maxhdfree:MAX:  %7.1lf %sb' ";
+$HD2_GRAPH .= "'COMMENT:\\n' ";
+$HD2_GRAPH .= "'COMMENT: Avg\\:  ' ";
+$HD2_GRAPH .= "'GPRINT:avghdused:AVERAGE:%7.1lf %sb' ";
+$HD2_GRAPH .= "'GPRINT:avghdfree:AVERAGE:  %7.1lf %sb' ";
+$HD2_GRAPH .= "'COMMENT:\\n' ";
+$HD2_GRAPH .= "'COMMENT: Min\\:  ' ";
+$HD2_GRAPH .= "'GPRINT:minhdused:MIN:%7.1lf %sb' ";
+$HD2_GRAPH .= "'GPRINT:minhdfree:MIN:  %7.1lf %sb' ";
+$HD2_GRAPH .= "'COMMENT:\\n' ";
+$HD2_GRAPH .= "'COMMENT:Last\\:  ' ";
+$HD2_GRAPH .= "'GPRINT:avghdused:LAST:%7.1lf %sb' ";  
+$HD2_GRAPH .= "'GPRINT:avghdfree:LAST:  %7.1lf %sb' ";
+
+
+$HD_GRAPH1  = "-b '1024' -l '0' ";
+$HD_GRAPH1 .= "-t 'Hard Drive Usage' ";
+$HD_GRAPH1 .= "-v 'Bytes' ";
+$HD_GRAPH1 .= "'DEF:minhdused=$RRDDIR/";
+$HD_GRAPH2  = ":hdused:MIN' ";
+$HD_GRAPH2 .= "'DEF:avghdused=$RRDDIR/";
+$HD_GRAPH3  = ":hdused:AVERAGE' ";
+$HD_GRAPH3 .= "'DEF:maxhdused=$RRDDIR/";
+$HD_GRAPH4  = ":hdused:MAX' ";
+$HD_GRAPH4 .= "'DEF:minhdfree=$RRDDIR/";
+$HD_GRAPH5  = ":hdfree:MIN' ";
+$HD_GRAPH5 .= "'DEF:avghdfree=$RRDDIR/";
+$HD_GRAPH6  = ":hdfree:AVERAGE' ";
+$HD_GRAPH6 .= "'DEF:maxhdfree=$RRDDIR/";
+$HD_GRAPH7  = ":hdfree:MAX' ";
+$HD_GRAPH7 .= "'CDEF:diffhdused=maxhdused,avghdused,-' ";
+$HD_GRAPH7 .= "'COMMENT:       ' ";
+$HD_GRAPH7 .= "'AREA:avghdused#000080: Used     ' ";
+$HD_GRAPH7 .= "'STACK:avghdfree#00FF00: Free' ";
+$HD_GRAPH7 .= "'COMMENT:\\n' ";
+$HD_GRAPH7 .= "'COMMENT: Max\\:  ' ";
+$HD_GRAPH7 .= "'GPRINT:maxhdused:MAX:%7.1lf %sb' ";
+$HD_GRAPH7 .= "'GPRINT:maxhdfree:MAX:  %7.1lf %sb' ";
+$HD_GRAPH7 .= "'COMMENT:\\n' ";
+$HD_GRAPH7 .= "'COMMENT: Avg\\:  ' ";
+$HD_GRAPH7 .= "'GPRINT:avghdused:AVERAGE:%7.1lf %sb' ";
+$HD_GRAPH7 .= "'GPRINT:avghdfree:AVERAGE:  %7.1lf %sb' ";
+$HD_GRAPH7 .= "'COMMENT:\\n' ";
+$HD_GRAPH7 .= "'COMMENT: Min\\:  ' ";
+$HD_GRAPH7 .= "'GPRINT:minhdused:MIN:%7.1lf %sb' ";
+$HD_GRAPH7 .= "'GPRINT:minhdfree:MIN:  %7.1lf %sb' ";
+$HD_GRAPH7 .= "'COMMENT:\\n' ";
+$HD_GRAPH7 .= "'COMMENT:Last\\:  ' ";
+$HD_GRAPH7 .= "'GPRINT:avghdused:LAST:%7.1lf %sb' ";
+$HD_GRAPH7 .= "'GPRINT:avghdfree:LAST:  %7.1lf %sb' ";
+
+$UPTIME_GRAPH  = "-b '1000' -l '0' "; 
+$UPTIME_GRAPH .= "-t 'Uptime' "; 
+$UPTIME_GRAPH .= "-v 'Days' "; 
+$UPTIME_GRAPH .= "'DEF:avguptime=$RRDDIR/$RRDFILE.rrd:uptime:AVERAGE' ";
+$UPTIME_GRAPH .= "'DEF:maxuptime=$RRDDIR/$RRDFILE.rrd:uptime:MAX' ";
+$UPTIME_GRAPH .= "'CDEF:avgdays=avguptime,86400,/' ";
+$UPTIME_GRAPH .= "'CDEF:maxdays=maxuptime,86400,/' ";
+$UPTIME_GRAPH .= "'COMMENT:       ' ";
+$UPTIME_GRAPH .= "'AREA:avgdays#00FF00: Uptime' ";
+$UPTIME_GRAPH .= "'LINE1:avgdays#1000FF' ";
+$UPTIME_GRAPH .= "'COMMENT:\\n' ";
+$UPTIME_GRAPH .= "'COMMENT: Max\\:    ' ";
+$UPTIME_GRAPH .= "'GPRINT:maxdays:MAX:%7.1lf   ' ";
+$UPTIME_GRAPH .= "'COMMENT:\\n' ";
+$UPTIME_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$UPTIME_GRAPH .= "'GPRINT:avgdays:AVERAGE:%7.1lf   ' ";
+$UPTIME_GRAPH .= "'COMMENT:\\n' ";
+$UPTIME_GRAPH .= "'COMMENT:Last\\:    ' ";
+$UPTIME_GRAPH .= "'GPRINT:avgdays:LAST:%7.1lf   ' ";
+
+$LATENCY_GRAPH  = "-b '1000' -l '0' ";
+$LATENCY_GRAPH  = "-t 'Latency / Packet Loss (<D>)' ";
+$LATENCY_GRAPH .= "-v 'ms / % (${pingscale}ms = 100%)' ";
+$LATENCY_GRAPH .= "'DEF:minlatency=$RRDDIR/$HOSTFILE<D>.rrd:avglatency:MIN' ";
+$LATENCY_GRAPH .= "'DEF:avglatency=$RRDDIR/$HOSTFILE<D>.rrd:avglatency:AVERAGE' ";
+$LATENCY_GRAPH .= "'DEF:maxlatency=$RRDDIR/$HOSTFILE<D>.rrd:avglatency:MAX' ";
+$LATENCY_GRAPH .= "'DEF:minloss=$RRDDIR/$HOSTFILE<D>.rrd:loss:MIN' ";
+$LATENCY_GRAPH .= "'DEF:avgloss=$RRDDIR/$HOSTFILE<D>.rrd:loss:AVERAGE' ";
+$LATENCY_GRAPH .= "'DEF:maxloss=$RRDDIR/$HOSTFILE<D>.rrd:loss:MAX' ";
+$LATENCY_GRAPH .= "'CDEF:avgadjlatency=avglatency,${maxping},1000,/,MIN' ";
+$LATENCY_GRAPH .= "'CDEF:maxadjlatency=maxlatency,${maxping},1000,/,MIN' ";
+$LATENCY_GRAPH .= "'CDEF:diffadjlatency=maxadjlatency,avgadjlatency,-' ";
+$LATENCY_GRAPH .= "'CDEF:avgadjloss=avgloss,100000,/,${pingscale},*' ";
+$LATENCY_GRAPH .= "'CDEF:maxadjloss=maxloss,100000,/,${pingscale},*' ";
+$LATENCY_GRAPH .= "'COMMENT:       ' ";
+$LATENCY_GRAPH .= "'AREA:avgadjlatency#00FF00: Latency' ";
+$LATENCY_GRAPH .= "<'STACK:diffadjlatency#006400:   '> ";
+$LATENCY_GRAPH .= "{'COMMENT:   '} ";
+$LATENCY_GRAPH .= "'LINE1:avgadjloss#1000FF: Loss' ";
+$LATENCY_GRAPH .= "<'LINE1:maxadjloss#000080: '> ";
+$LATENCY_GRAPH .= "'COMMENT:\\n' ";
+$LATENCY_GRAPH .= "'COMMENT: Max\\:    ' ";
+$LATENCY_GRAPH .= "'GPRINT:maxlatency:MAX:%7.2lf %ss' ";
+$LATENCY_GRAPH .= "'GPRINT:maxloss:MAX:<  >    %7.2lf %% ' ";
+$LATENCY_GRAPH .= "'COMMENT:\\n' ";
+$LATENCY_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$LATENCY_GRAPH .= "'GPRINT:avglatency:AVERAGE:%7.2lf %ss' ";
+$LATENCY_GRAPH .= "'GPRINT:avgloss:AVERAGE:<  >    %7.2lf %% ' ";
+$LATENCY_GRAPH .= "'COMMENT:\\n' ";
+$LATENCY_GRAPH .= "'COMMENT: Min\\:    ' ";
+$LATENCY_GRAPH .= "'GPRINT:minlatency:MIN:%7.2lf %ss' ";
+$LATENCY_GRAPH .= "'COMMENT:\\n' ";
+$LATENCY_GRAPH .= "'COMMENT:Last\\:    ' ";
+$LATENCY_GRAPH .= "'GPRINT:avglatency:LAST:%7.2lf %ss' ";
+$LATENCY_GRAPH .= "'GPRINT:avgloss:LAST:<  >    %7.2lf %% ' ";
+$LATENCY_MAX = 'week month year';
+
+$IFACE_GRAPH  = "-b '1024' -l '0' ";
+$IFACE_GRAPH  = "-t 'Ethernet Traffic (<D>)' ";
+$IFACE_GRAPH .= "-v 'b/s' ";
+$IFACE_GRAPH .= "'DEF:minbin=$RRDDIR/$IFACEFILE<D>.rrd:bin:MIN' ";
+$IFACE_GRAPH .= "'DEF:avgbin=$RRDDIR/$IFACEFILE<D>.rrd:bin:AVERAGE' ";
+$IFACE_GRAPH .= "'DEF:maxbin=$RRDDIR/$IFACEFILE<D>.rrd:bin:MAX' ";
+$IFACE_GRAPH .= "'DEF:minbout=$RRDDIR/$IFACEFILE<D>.rrd:bout:MIN' ";
+$IFACE_GRAPH .= "'DEF:avgbout=$RRDDIR/$IFACEFILE<D>.rrd:bout:AVERAGE' ";
+$IFACE_GRAPH .= "'DEF:maxbout=$RRDDIR/$IFACEFILE<D>.rrd:bout:MAX' ";
+$IFACE_GRAPH .= "'CDEF:diffbin=maxbin,avgbin,-' ";
+$IFACE_GRAPH .= "'COMMENT:       ' ";
+$IFACE_GRAPH .= "'AREA:avgbin#00FF00: Inbound' ";
+$IFACE_GRAPH .= "<'STACK:diffbin#006400:    '> ";
+$IFACE_GRAPH .= "{'COMMENT:    '} ";
+$IFACE_GRAPH .= "'LINE1:avgbout#1000FF: Outbound' ";
+$IFACE_GRAPH .= "<'LINE1:maxbout#000080: '> ";
+$IFACE_GRAPH .= "'COMMENT:\\n' ";
+$IFACE_GRAPH .= "'COMMENT: Max\\:    ' ";
+$IFACE_GRAPH .= "'GPRINT:maxbin:MAX:%7.2lf %sb/s' ";
+$IFACE_GRAPH .= "'GPRINT:maxbout:MAX:<  >    %7.2lf %sb/s' ";
+$IFACE_GRAPH .= "'COMMENT:\\n' ";
+$IFACE_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$IFACE_GRAPH .= "'GPRINT:avgbin:AVERAGE:%7.2lf %sb/s' ";
+$IFACE_GRAPH .= "'GPRINT:avgbout:AVERAGE:<  >    %7.2lf %sb/s' ";
+$IFACE_GRAPH .= "'COMMENT:\\n' ";
+$IFACE_GRAPH .= "'COMMENT:Last\\:    ' ";
+$IFACE_GRAPH .= "'GPRINT:avgbin:LAST:%7.2lf %sb/s' ";
+$IFACE_GRAPH .= "'GPRINT:avgbout:LAST:<  >    %7.2lf %sb/s' ";
+$IFACE_MAX = 'week month year';
+
+$VOLTAGE_GRAPH  = "-b '1000' ";
+$VOLTAGE_GRAPH .= "-t 'System Sensors (Voltage)' ";
+$VOLTAGE_GRAPH .= "-v 'Volts' ";
+$VOLTAGE_GRAPH .= "'DEF:minin0=$RRDDIR/$SENSORSFILE.rrd:in0:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin0=$RRDDIR/$SENSORSFILE.rrd:in0:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin0=$RRDDIR/$SENSORSFILE.rrd:in0:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minin1=$RRDDIR/$SENSORSFILE.rrd:in1:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin1=$RRDDIR/$SENSORSFILE.rrd:in1:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin1=$RRDDIR/$SENSORSFILE.rrd:in1:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minin2=$RRDDIR/$SENSORSFILE.rrd:in2:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin2=$RRDDIR/$SENSORSFILE.rrd:in2:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin2=$RRDDIR/$SENSORSFILE.rrd:in2:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minin3=$RRDDIR/$SENSORSFILE.rrd:in3:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin3=$RRDDIR/$SENSORSFILE.rrd:in3:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin3=$RRDDIR/$SENSORSFILE.rrd:in3:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minin4=$RRDDIR/$SENSORSFILE.rrd:in4:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin4=$RRDDIR/$SENSORSFILE.rrd:in4:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin4=$RRDDIR/$SENSORSFILE.rrd:in4:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minin5=$RRDDIR/$SENSORSFILE.rrd:in5:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin5=$RRDDIR/$SENSORSFILE.rrd:in5:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin5=$RRDDIR/$SENSORSFILE.rrd:in5:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minin6=$RRDDIR/$SENSORSFILE.rrd:in6:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgin6=$RRDDIR/$SENSORSFILE.rrd:in6:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxin6=$RRDDIR/$SENSORSFILE.rrd:in6:MAX' ";
+$VOLTAGE_GRAPH .= "'DEF:minvid=$RRDDIR/$SENSORSFILE.rrd:vid:MIN' ";
+$VOLTAGE_GRAPH .= "'DEF:avgvid=$RRDDIR/$SENSORSFILE.rrd:vid:AVERAGE' ";
+$VOLTAGE_GRAPH .= "'DEF:maxvid=$RRDDIR/$SENSORSFILE.rrd:vid:MAX' ";
+$VOLTAGE_GRAPH .= "'COMMENT:     ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin0#A52A2A:in0  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin1#8B4513:in1  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin2#DAA520:in2  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin3#FF0000:in3  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin4#FFFF00:in4  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin5#0000FF:in5  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgin6#999999:in6  ' ";
+$VOLTAGE_GRAPH .= "'LINE2:avgvid#000000:vid' ";
+$VOLTAGE_GRAPH .= "'COMMENT:\\n' ";
+$VOLTAGE_GRAPH .= "'COMMENT: Max\\:\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin0:MAX:  %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin1:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin2:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin3:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin4:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin5:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxin6:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:maxvid:MAX:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'COMMENT:\\n' ";
+$VOLTAGE_GRAPH .= "'COMMENT: Avg\\:\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin0:AVERAGE:  %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin1:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin2:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin3:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin4:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin5:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin6:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgvid:AVERAGE:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'COMMENT:\\n' ";
+$VOLTAGE_GRAPH .= "'COMMENT: Min\\:\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin0:MIN:  %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin1:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin2:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin3:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin4:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin5:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minin6:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:minvid:MIN:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'COMMENT:\\n' ";
+$VOLTAGE_GRAPH .= "'COMMENT:Last\\:\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin0:LAST:  %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin1:LAST:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin2:LAST:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin3:LAST:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin4:LAST:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin5:LAST:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgin6:LAST:   %5.2lfV\\g' ";
+$VOLTAGE_GRAPH .= "'GPRINT:avgvid:LAST:   %5.2lfV\\g' ";
+
+$FAN_GRAPH  = "-b '1000' ";
+$FAN_GRAPH .= "-t 'System Sensors (Fans)' ";
+$FAN_GRAPH .= "-v 'RPM' ";
+$FAN_GRAPH .= "'DEF:minfan1=$RRDDIR/$SENSORSFILE.rrd:fan1:MIN' ";
+$FAN_GRAPH .= "'DEF:avgfan1=$RRDDIR/$SENSORSFILE.rrd:fan1:AVERAGE' ";
+$FAN_GRAPH .= "'DEF:maxfan1=$RRDDIR/$SENSORSFILE.rrd:fan1:MAX' ";
+$FAN_GRAPH .= "'DEF:minfan2=$RRDDIR/$SENSORSFILE.rrd:fan2:MIN' ";
+$FAN_GRAPH .= "'DEF:avgfan2=$RRDDIR/$SENSORSFILE.rrd:fan2:AVERAGE' ";
+$FAN_GRAPH .= "'DEF:maxfan2=$RRDDIR/$SENSORSFILE.rrd:fan2:MAX' ";
+$FAN_GRAPH .= "'DEF:minfan3=$RRDDIR/$SENSORSFILE.rrd:fan3:MIN' ";
+$FAN_GRAPH .= "'DEF:avgfan3=$RRDDIR/$SENSORSFILE.rrd:fan3:AVERAGE' ";
+$FAN_GRAPH .= "'DEF:maxfan3=$RRDDIR/$SENSORSFILE.rrd:fan3:MAX' ";
+$FAN_GRAPH .= "'DEF:minfan4=$RRDDIR/$SENSORSFILE.rrd:fan4:MIN' ";
+$FAN_GRAPH .= "'DEF:avgfan4=$RRDDIR/$SENSORSFILE.rrd:fan4:AVERAGE' ";
+$FAN_GRAPH .= "'DEF:maxfan4=$RRDDIR/$SENSORSFILE.rrd:fan4:MAX' ";
+$FAN_GRAPH .= "'DEF:minfan5=$RRDDIR/$SENSORSFILE.rrd:fan5:MIN' ";
+$FAN_GRAPH .= "'DEF:avgfan5=$RRDDIR/$SENSORSFILE.rrd:fan5:AVERAGE' ";
+$FAN_GRAPH .= "'DEF:maxfan5=$RRDDIR/$SENSORSFILE.rrd:fan5:MAX' ";
+$FAN_GRAPH .= "'COMMENT:     ' ";
+$FAN_GRAPH .= "'LINE2:avgfan1#0000FF:Fan 1  ' ";
+$FAN_GRAPH .= "'LINE2:avgfan2#8B4513:Fan 2  ' ";
+$FAN_GRAPH .= "'LINE2:avgfan3#FF0000:Fan 3  ' ";
+$FAN_GRAPH .= "'LINE2:avgfan4#FFFF00:Fan 4  ' ";
+$FAN_GRAPH .= "'LINE2:avgfan5#DAA520:Fan 5' ";
+$FAN_GRAPH .= "'COMMENT:\\n' ";
+$FAN_GRAPH .= "'COMMENT: Max\\:' ";
+$FAN_GRAPH .= "'GPRINT:maxfan1:MAX: %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:maxfan2:MAX:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:maxfan3:MAX:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:maxfan4:MAX:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:maxfan5:MAX:   %6.1lf' ";
+$FAN_GRAPH .= "'COMMENT:\\n' ";
+$FAN_GRAPH .= "'COMMENT: Avg\\:' ";
+$FAN_GRAPH .= "'GPRINT:avgfan1:AVERAGE: %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan2:AVERAGE:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan3:AVERAGE:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan4:AVERAGE:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan5:AVERAGE:   %6.1lf' ";
+$FAN_GRAPH .= "'COMMENT:\\n' ";
+$FAN_GRAPH .= "'COMMENT: Min\\:' ";
+$FAN_GRAPH .= "'GPRINT:minfan1:MIN: %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:minfan2:MIN:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:minfan3:MIN:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:minfan4:MIN:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:minfan5:MIN:   %6.1lf' ";
+$FAN_GRAPH .= "'COMMENT:\\n' ";
+$FAN_GRAPH .= "'COMMENT:Last\\:' ";
+$FAN_GRAPH .= "'GPRINT:avgfan1:LAST: %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan2:LAST:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan3:LAST:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan4:LAST:   %6.1lf' ";
+$FAN_GRAPH .= "'GPRINT:avgfan5:LAST:   %6.1lf' ";
+
+$SAMBA_GRAPH  = "-b '1000' -l '0' ";
+$SAMBA_GRAPH .= "-t 'Samba users' ";
+$SAMBA_GRAPH .= "-v 'Users' ";
+$SAMBA_GRAPH .= "'DEF:avguser=$RRDDIR/$SAMBAUSERRRD.rrd:Samba:AVERAGE' ";
+$SAMBA_GRAPH .= "'DEF:maxuser=$RRDDIR/$SAMBAUSERRRD.rrd:Samba:MAX' ";
+$SAMBA_GRAPH .= "'CDEF:avgsamba=avguser,1,/' ";
+$SAMBA_GRAPH .= "'CDEF:maxsamba=maxuser,1,/' ";
+$SAMBA_GRAPH .= "'COMMENT:       ' ";
+$SAMBA_GRAPH .= "'AREA:avgsamba#00FF00: Users' ";
+$SAMBA_GRAPH .= "'LINE1:avgsamba#1000FF' ";
+$SAMBA_GRAPH .= "'COMMENT:\\n' ";
+$SAMBA_GRAPH .= "'COMMENT: Max\\:    ' ";
+$SAMBA_GRAPH .= "'GPRINT:maxsamba:MAX:%7.1lf   ' ";
+$SAMBA_GRAPH .= "'COMMENT:\\n' ";
+$SAMBA_GRAPH .= "'COMMENT: Avg\\:    ' ";
+$SAMBA_GRAPH .= "'GPRINT:avgsamba:AVERAGE:%7.1lf   ' ";
+$SAMBA_GRAPH .= "'COMMENT:\\n' ";
+$SAMBA_GRAPH .= "'COMMENT:Last\\:    ' ";
+$SAMBA_GRAPH .= "'GPRINT:avgsamba:LAST:%7.1lf   ' ";
+
+$TEMP_GRAPH  = "-b '1000' "; 
+$TEMP_GRAPH .= "-t 'System Sensors (Temperature)' ";
+$TEMP_GRAPH .= "-v '°C' "; 
+$TEMP_GRAPH .= "'DEF:mintemp1=$RRDDIR/$SENSORSFILE.rrd:temp1:MIN' ";
+$TEMP_GRAPH .= "'DEF:avgtemp1=$RRDDIR/$SENSORSFILE.rrd:temp1:AVERAGE' ";
+$TEMP_GRAPH .= "'DEF:maxtemp1=$RRDDIR/$SENSORSFILE.rrd:temp1:MAX' ";
+$TEMP_GRAPH .= "'DEF:mintemp2=$RRDDIR/$SENSORSFILE.rrd:temp2:MIN' ";
+$TEMP_GRAPH .= "'DEF:avgtemp2=$RRDDIR/$SENSORSFILE.rrd:temp2:AVERAGE' ";
+$TEMP_GRAPH .= "'DEF:maxtemp2=$RRDDIR/$SENSORSFILE.rrd:temp2:MAX' ";
+$TEMP_GRAPH .= "'DEF:mintemp3=$RRDDIR/$SENSORSFILE.rrd:temp3:MIN' ";
+$TEMP_GRAPH .= "'DEF:avgtemp3=$RRDDIR/$SENSORSFILE.rrd:temp3:AVERAGE' ";
+$TEMP_GRAPH .= "'DEF:maxtemp3=$RRDDIR/$SENSORSFILE.rrd:temp3:MAX' ";
+$TEMP_GRAPH .= "'DEF:mintemp4=$RRDDIR/$SENSORSFILE.rrd:temp4:MIN' ";
+$TEMP_GRAPH .= "'DEF:avgtemp4=$RRDDIR/$SENSORSFILE.rrd:temp4:AVERAGE' ";
+$TEMP_GRAPH .= "'DEF:maxtemp4=$RRDDIR/$SENSORSFILE.rrd:temp4:MAX' ";
+if ( -e "$RRDDIR/$UPSFILE.rrd" )
+    {
+    $TEMP_GRAPH .= "'DEF:minups1temp=$RRDDIR/$UPSFILE.rrd:itemp:MIN' ";
+    $TEMP_GRAPH .= "'DEF:avgups1temp=$RRDDIR/$UPSFILE.rrd:itemp:AVERAGE' ";
+    $TEMP_GRAPH .= "'DEF:maxups1temp=$RRDDIR/$UPSFILE.rrd:itemp:MAX' ";
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd" )
+    {
+    $TEMP_GRAPH .= "'DEF:minups2temp=$RRDDIR/$UPSFILE-2.rrd:itemp:MIN' ";
+    $TEMP_GRAPH .= "'DEF:avgups2temp=$RRDDIR/$UPSFILE-2.rrd:itemp:AVERAGE' ";
+    $TEMP_GRAPH .= "'DEF:maxups2temp=$RRDDIR/$UPSFILE-2.rrd:itemp:MAX' ";
+    }
+$TEMP_GRAPH .= "'COMMENT:     ' ";
+$TEMP_GRAPH .= "'LINE2:avgtemp1#0000FF:Temp 1  ' ";
+$TEMP_GRAPH .= "'LINE2:avgtemp2#8B4513:Temp 2  ' ";
+$TEMP_GRAPH .= "'LINE2:avgtemp3#FFFF00:Temp 3  ' ";
+if ( -e "$RRDDIR/$UPSFILE.rrd" && -e "$RRDDIR/$UPSFILE-2.rrd" )
+    {
+    $TEMP_GRAPH .= "'LINE2:avgtemp4#FF0000:Temp 4   ' ";
+    $TEMP_GRAPH .= "'LINE2:avgups1temp#999999:UPS 1  ' ";
+    $TEMP_GRAPH .= "'LINE2:avgups2temp#333333:UPS 2' ";
+    }
+elsif ( -e "$RRDDIR/$UPSFILE.rrd" )
+    {
+    $TEMP_GRAPH .= "'LINE2:avgtemp4#FF0000:Temp 4    ' ";
+    $TEMP_GRAPH .= "'LINE2:avgups1temp#999999:UPS' ";
+    }
+else
+    {
+    $TEMP_GRAPH .= "'LINE2:avgtemp4#FF0000:Temp 4' ";
+    }
+$TEMP_GRAPH .= "'COMMENT:\\n' ";
+$TEMP_GRAPH .= "'COMMENT: Max\\:' ";
+$TEMP_GRAPH .= "'GPRINT:maxtemp1:MAX: %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:maxtemp2:MAX:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:maxtemp3:MAX:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:maxtemp4:MAX:  %5.2lf °C' ";
+if ( -e "$RRDDIR/$UPSFILE.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:maxups1temp:MAX:  %5.2lf °C' ";
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:maxups2temp:MAX:  %5.2lf °C' ";
+    }
+$TEMP_GRAPH .= "'COMMENT:\\n' ";
+$TEMP_GRAPH .= "'COMMENT: Avg\\:' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp1:AVERAGE: %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp2:AVERAGE:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp3:AVERAGE:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp4:AVERAGE:  %5.2lf °C' ";
+if ( -e "$RRDDIR/$UPSFILE.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:avgups1temp:AVERAGE:  %5.2lf °C' ";
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:avgups2temp:AVERAGE:  %5.2lf °C' ";
+    }
+$TEMP_GRAPH .= "'COMMENT:\\n' ";
+$TEMP_GRAPH .= "'COMMENT: Min\\:' ";
+$TEMP_GRAPH .= "'GPRINT:mintemp1:MIN: %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:mintemp2:MIN:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:mintemp3:MIN:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:mintemp4:MIN:  %5.2lf °C' ";
+if ( -e "$RRDDIR/$UPSFILE.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:minups1temp:MIN:  %5.2lf °C' ";
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:minups2temp:MIN:  %5.2lf °C' ";
+    }
+$TEMP_GRAPH .= "'COMMENT:\\n' ";
+$TEMP_GRAPH .= "'COMMENT:Last\\:' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp1:LAST: %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp2:LAST:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp3:LAST:  %5.2lf °C' ";
+$TEMP_GRAPH .= "'GPRINT:avgtemp4:LAST:  %5.2lf °C' ";
+if ( -e "$RRDDIR/$UPSFILE.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:avgups1temp:LAST:  %5.2lf °C' ";
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd" )
+    {
+    $TEMP_GRAPH .= "'GPRINT:avgups2temp:LAST:  %5.2lf °C' ";
+    }
+
+$UPS_GRAPH  = "-b '1000' -l '0' ";
+$UPS_GRAPH .= "-t 'UPS<D> Statistics' ";
+$UPS_GRAPH .= "-v 'V / % / Minutes / °C' ";
+$UPS_GRAPH .= "'DEF:minlinev=$RRDDIR/$UPSFILE<D>.rrd:linev:MIN' ";
+$UPS_GRAPH .= "'DEF:avglinev=$RRDDIR/$UPSFILE<D>.rrd:linev:AVERAGE' ";
+$UPS_GRAPH .= "'DEF:maxlinev=$RRDDIR/$UPSFILE<D>.rrd:linev:MAX' ";
+$UPS_GRAPH .= "'DEF:minloadpct=$RRDDIR/$UPSFILE<D>.rrd:loadpct:MIN' ";
+$UPS_GRAPH .= "'DEF:avgloadpct=$RRDDIR/$UPSFILE<D>.rrd:loadpct:AVERAGE' ";
+$UPS_GRAPH .= "'DEF:maxloadpct=$RRDDIR/$UPSFILE<D>.rrd:loadpct:MAX' ";
+$UPS_GRAPH .= "'DEF:minbcharge=$RRDDIR/$UPSFILE<D>.rrd:bcharge:MIN' ";
+$UPS_GRAPH .= "'DEF:avgbcharge=$RRDDIR/$UPSFILE<D>.rrd:bcharge:AVERAGE' ";
+$UPS_GRAPH .= "'DEF:maxbcharge=$RRDDIR/$UPSFILE<D>.rrd:bcharge:MAX' ";
+$UPS_GRAPH .= "'DEF:mintimeleft=$RRDDIR/$UPSFILE<D>.rrd:timeleft:MIN' ";
+$UPS_GRAPH .= "'DEF:avgtimeleft=$RRDDIR/$UPSFILE<D>.rrd:timeleft:AVERAGE' ";
+$UPS_GRAPH .= "'DEF:maxtimeleft=$RRDDIR/$UPSFILE<D>.rrd:timeleft:MAX' ";
+$UPS_GRAPH .= "'DEF:minbattv=$RRDDIR/$UPSFILE<D>.rrd:battv:MIN' ";
+$UPS_GRAPH .= "'DEF:avgbattv=$RRDDIR/$UPSFILE<D>.rrd:battv:AVERAGE' ";
+$UPS_GRAPH .= "'DEF:maxbattv=$RRDDIR/$UPSFILE<D>.rrd:battv:MAX' ";
+$UPS_GRAPH .= "'DEF:minitemp=$RRDDIR/$UPSFILE<D>.rrd:itemp:MIN' ";
+$UPS_GRAPH .= "'DEF:avgitemp=$RRDDIR/$UPSFILE<D>.rrd:itemp:AVERAGE' ";
+$UPS_GRAPH .= "'DEF:maxitemp=$RRDDIR/$UPSFILE<D>.rrd:itemp:MAX' ";
+$UPS_GRAPH .= "'COMMENT:     ' ";
+$UPS_GRAPH .= "'LINE2:avglinev#0000FF:Line V  ' ";
+$UPS_GRAPH .= "'LINE2:avgbattv#DAA520:Batt V  ' ";
+$UPS_GRAPH .= "'LINE2:avgbcharge#FF0000:Charge  ' ";
+$UPS_GRAPH .= "'LINE2:avgtimeleft#999999:Time  ' ";
+$UPS_GRAPH .= "'LINE2:avgloadpct#8B4513:Load  ' ";
+$UPS_GRAPH .= "'LINE2:avgitemp#333333:Temp' ";
+$UPS_GRAPH .= "'COMMENT:\\n' ";
+$UPS_GRAPH .= "'COMMENT: Max\\:' ";
+$UPS_GRAPH .= "'GPRINT:maxlinev:MAX: %6.1lfV' ";
+$UPS_GRAPH .= "'GPRINT:maxbattv:MAX:   %6.2lfV' ";
+$UPS_GRAPH .= "'GPRINT:maxbcharge:MAX:  %6.1lf %%' ";
+$UPS_GRAPH .= "'GPRINT:maxtimeleft:MAX:  %6.2lf' ";
+$UPS_GRAPH .= "'GPRINT:maxloadpct:MAX: %6.2lf %%' ";
+$UPS_GRAPH .= "'GPRINT:maxitemp:MAX: %6.2lf °C' ";
+$UPS_GRAPH .= "'COMMENT:\\n' ";
+$UPS_GRAPH .= "'COMMENT: Avg\\:' ";
+$UPS_GRAPH .= "'GPRINT:avglinev:AVERAGE: %6.1lfV' ";
+$UPS_GRAPH .= "'GPRINT:avgbattv:AVERAGE:   %6.2lfV' ";
+$UPS_GRAPH .= "'GPRINT:avgbcharge:AVERAGE:  %6.1lf %%' ";
+$UPS_GRAPH .= "'GPRINT:avgtimeleft:AVERAGE:  %6.2lf' ";
+$UPS_GRAPH .= "'GPRINT:avgloadpct:AVERAGE: %6.2lf %%' ";
+$UPS_GRAPH .= "'GPRINT:avgitemp:AVERAGE: %6.2lf °C' ";
+$UPS_GRAPH .= "'COMMENT:\\n' ";
+$UPS_GRAPH .= "'COMMENT: Min\\:' ";
+$UPS_GRAPH .= "'GPRINT:minlinev:MIN: %6.1lfV' ";
+$UPS_GRAPH .= "'GPRINT:minbattv:MIN:   %6.2lfV' ";
+$UPS_GRAPH .= "'GPRINT:minbcharge:MIN:  %6.1lf %%' ";
+$UPS_GRAPH .= "'GPRINT:mintimeleft:MIN:  %6.2lf' ";
+$UPS_GRAPH .= "'GPRINT:minloadpct:MIN: %6.2lf %%' ";
+$UPS_GRAPH .= "'GPRINT:minitemp:MIN: %6.2lf °C' ";
+$UPS_GRAPH .= "'COMMENT:\\n' ";
+$UPS_GRAPH .= "'COMMENT:Last\\:' ";
+$UPS_GRAPH .= "'GPRINT:avglinev:LAST: %6.1lfV' ";
+$UPS_GRAPH .= "'GPRINT:avgbattv:LAST:   %6.2lfV' ";
+$UPS_GRAPH .= "'GPRINT:avgbcharge:LAST:  %6.1lf %%' ";
+$UPS_GRAPH .= "'GPRINT:avgtimeleft:LAST:  %6.2lf' ";
+$UPS_GRAPH .= "'GPRINT:avgloadpct:LAST: %6.2lf %%' ";
+$UPS_GRAPH .= "'GPRINT:avgitemp:LAST: %6.2lf °C' ";
+
+$CGI::POST_MAX=1024 * 100;
+$CGI::DISABLE_UPLOADS = 1;
+
+my $q = new CGI;
+
+my @hosts = (); 
+my @hostfiles = `/bin/ls $RRDDIR/$HOSTFILE*.rrd`;
+foreach(@hostfiles)
+    {
+    if (/$HOSTFILE([^\/]+).rrd$/)
+        {
+        push(@hosts,$1);
+        }
+    }
+my @hds = ();
+my @hdfiles = `/bin/ls $RRDDIR/drive*.rrd`;
+foreach(@hdfiles)
+    {
+    if (/drive_([^\/]+).rrd$/)
+        {
+        push(@hds, $1);
+        }
+    }
+
+my @interfaces = (); 
+my @ifacefiles = `/bin/ls $RRDDIR/$IFACEFILE*.rrd`; 
+foreach(@ifacefiles)
+    {
+    if (/$IFACEFILE([^\/]+).rrd$/)
+	{
+	push(@interfaces,$1);
+	}
+    }
+foreach (@hds) { print STDERR "-=" . $_ . "=-"; }
+if (! grep (/^state$/, $q->param))
+    {
+    $q->param(-name=>"time",value=>"day");
+    &showGeneral ($q);
+    &generateFoot($q);
+    }
+elsif ($q->param('state') eq "detailed")
+    {
+    &showDetailed ($q);
+    &generateFoot($q);
+    }
+elsif ($q->param('state') eq "general")
+    {
+    &showGeneral ($q);
+    &generateFoot($q);
+    }
+elsif ($q->param('state') eq "gif")
+    {
+    &showGif ($q);
+    }
+else
+    {
+    }
+
+sub trim($)
+{
+        my $string = shift;
+        $string =~ s/^\s+//;
+        $string =~ s/\s+$//;
+        return $string;
+}
+
+sub showGeneral ($)
+{
+my ($q) = @_;
+my ($typeGraph, $time);
+# untaint the parameters
+if ( $q->param("typegraph") =~ /^([\w]+)$/ ) { $typeGraph = $1; } else { $typeGraph = 'CPU'; }
+if ( $q->param("time") =~ /^([\w]+)$/ ) { $time = $1; } else { $time = 'day'; }
+
+my $key;
+
+if ($time eq "hour") { $header = "'$HOURLY' $GRAPH (1 $MINUTE $AVERAGE)<br>"; }
+elsif ($time eq "day") { $header = "'$DAILY' $GRAPH (5 $MINUTE $AVERAGE)<br>"; }
+elsif ($time eq "week") { $header = "'$WEEKLY' $GRAPH (30 $MINUTE $AVERAGE)<br>"; }
+elsif ($time eq "month") { $header = "'$MONTHLY' $GRAPH (2 $HOUR $AVERAGE)<br>"; }
+elsif ($time eq "year") { $header = "'$YEARLY' $GRAPH (1 $DAY $AVERAGE)<br>"; }
+
+esmith::cgi::genHeaderNonCacheable ($q, \%conf, "$TITLE");
+print	"<meta http-equiv=\"refresh\" content=\"300\">";
+
+print "<table border=0 cellspacing=0 cellpadding=0>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=general&time=hour"}, "$HOURLY") . "</b></td><td width=20></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=general&time=day"}, "$DAILY") . "</b></td><td width=20></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=general&time=week"}, "$WEEKLY") . "</b></td><td width=20></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=general&time=month"}, "$MONTHLY") . "</b></td><td width=20></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=general&time=year"}, "$YEARLY") . "</b></td><td width=20></td>";
+print "</table>";
+
+print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=CPU"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=CPU&time=$time\">"));
+if ( -e "$RRDDIR/$PROCFILE"."1.rrd" )
+    {
+        print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=CPU0"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=CPU0&time=$time\">"));
+        print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=CPU1"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=CPU1&time=$time\">"));
+    }
+if ( -e "$RRDDIR/$PROCFILE"."2.rrd" ) 
+    {
+        print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=CPU2"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=CPU2&time=$time\">"));
+    }		
+if ( -e "$RRDDIR/$PROCFILE"."3.rrd" ) 
+    {
+        print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=CPU3"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=CPU3&time=$time\">"));
+    }
+
+print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=LOADCPU"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=LOADCPU&time=$time\">"));
+print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=MEM"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=MEM&time=$time\">"));
+if ( -e "$RRDDIR/$SENSORSFILE.rrd")
+    {
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=TEMP"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=TEMP&time=$time\">"));
+    }
+if ( -e "$RRDDIR/$UPSFILE.rrd")
+    {
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=UPS"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=UPS&time=$time\">"));
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd")
+    {
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=UPS&data=-2"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=UPS&time=$time&data=-2\">"));
+    }
+print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=PROCQUE"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=PROCQUE&time=$time\">"));
+print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=HD"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=HD&time=$time\">"));
+							
+foreach (@hds)
+{
+  print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=HD2&data=$_"},
+  "$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=HD2&data=$_&time=$time\">"));    
+
+}
+
+if ( -e "$RRDDIR/$SENSORSFILE.rrd")
+    {
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=VOLTAGE"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=VOLTAGE&time=$time\">"));
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=FAN"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=FAN&time=$time\">"));
+    }
+print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=UPTIME"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=UPTIME&time=$time\">"));
+if ($hosts ne "none")
+    {
+    foreach $key (@hosts)
+        {
+        print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=LATENCY&data=$key"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=LATENCY&data=$key&time=$time\">"));
+        }
+    }
+foreach $key (@interfaces)
+    {
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=IFACE&data=$key"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=IFACE&data=$key&time=$time\">"));
+    }
+if ( -e "$RRDDIR/$SAMBAUSERRRD.rrd")
+    {
+    print $q->p($q->a ({href => "${scriptname}?state=detailed&typegraph=SAMBA"},"$header<IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=SAMBA&time=$time\">"));
+    }
+ }
+
+sub showDetailed($)
+{
+my ($q) = @_;
+my ($typeGraph, $data);
+# untaint the parameters
+if ( $q->param("typegraph") =~ /^([\w]+)$/ ) { $typeGraph = $1; } else { $typeGraph = 'CPU'; }
+if ( $q->param("data") =~ /^([.-\w]+)$/ ) { $data = $1; } else { $data = ''; }
+
+my ($key,$title);
+
+esmith::cgi::genHeaderNonCacheable ($q, \%conf, "$TITLE");
+
+print "<meta http-equiv=\"refresh\" content=\"300\">";
+
+print "<table>";
+print "<tr><td align=right><b>System:</b></td><td><table border=0 cellspacing=0 cellpadding=0>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=CPU"}, $CPU) . "</b></td><td width=10></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=LOADCPU"}, $LOADCPU) . "</b></td><td width=10></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=MEM"}, $MEM) . "</b></td><td width=10></td>";
+if ( -e "$RRDDIR/$SENSORSFILE.rrd")
+    {
+    print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=TEMP"}, $TEMP) . "</b></td><td width=10></td>";
+    }
+if ( -e "$RRDDIR/$UPSFILE.rrd")
+    {
+    print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=UPS"}, $UPS) . "</b></td><td width=10></td>";
+    }
+if ( -e "$RRDDIR/$UPSFILE-2.rrd")
+    {
+    print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=UPS&data=-2"}, $UPS.'2') . "</b></td><td width=10></td>";
+    }
+print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=PROCQUE"}, $PROCQUE) . "</b></td><td width=10></td>";
+print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=HD"}, $HD) . "</b></td><td width=10></td>";
+if ( -e "$RRDDIR/$SENSORSFILE.rrd")
+    {
+    print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=VOLTAGE"}, $VOLTAGE) . "</b></td><td width=10></td>";
+    print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=FAN"}, $FAN) . "</b></td><td width=10></td>";
+    }
+print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=UPTIME"}, $UPTIME) . "</b></td><td width=10></td>";
+print "</table></td></tr>";
+
+if ($hosts ne "none")
+    {
+    print "<td align=right><b>Hosts:</b></td><td><table border=0 cellspacing=0 cellpadding=0>";
+    foreach $key (@hosts)
+        {
+        print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=LATENCY&data=$key"}, "$key") . "</b></td><td width=10></td>";
+        }
+    print   "</table></td></tr>";
+    }
+if ($#interfaces >= 0)
+    {
+    print "<td align=right><b>Interfaces:</b></td><td><table border=0 cellspacing=0 cellpadding=0>";
+    foreach $key (@interfaces)
+        {
+        print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=IFACE&data=$key"}, $key) . "</b></td><td width=10></td>";
+        }
+    print "</table></td></tr>";
+    }
+if ( -e "$RRDDIR/$SAMBAUSERRRD.rrd")
+    {
+    print "<td align=right><b>Samba:</b></td><td><table border=0 cellspacing=0 cellpadding=0>";
+    print "<td><b>" . $q->a ({href => "${scriptname}?state=detailed&typegraph=SAMBA"}, $SAMBA) . "</b></td><td width=10></td>";
+    print "</table></td></tr>";
+    }
+
+print "</table>";
+
+print $q->p ($q->a ({href => "${scriptname}?state=general&time=hour"},"'$HOURLY' $GRAPH (1 $MINUTE $AVERAGE)<br><IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=$typeGraph&data=$data&time=hour\">"));
+print $q->p ($q->a ({href => "${scriptname}?state=general&time=day"},"'$DAILY' $GRAPH (5 $MINUTE $AVERAGE)<br><IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=$typeGraph&data=$data&time=day\">"));
+print $q->p ($q->a ({href => "${scriptname}?state=general&time=week"},"'$WEEKLY' $GRAPH (30 $MINUTE $AVERAGE)<br><IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=$typeGraph&data=$data&time=week\">"));
+print $q->p ($q->a ({href => "${scriptname}?state=general&time=month"},"'$MONTHLY' $GRAPH (2 $HOUR $AVERAGE)<br><IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=$typeGraph&data=$data&time=month\">"));
+print $q->p ($q->a ({href => "${scriptname}?state=general&time=year"},"'$YEARLY' $GRAPH (1 $DAY $AVERAGE)<br><IMG BORDER=0 SRC=\"${scriptname}?state=gif&typegraph=$typeGraph&data=$data&time=year\">"));
+}
+
+sub showGif($)
+{
+my ($q) = @_;
+my ($typeGraph, $data, $time, $drive);
+# untaint the parameters
+if ( $q->param("typegraph") =~ /^([\w]+)$/ ) { $typeGraph = $1; } else { $typeGraph = 'CPU'; }
+if ( $q->param("data") =~ /^([.-\w]+)$/ ) { $data = $1; } else { $data = ''; }
+if ( $q->param("time") =~ /^([\w]+)$/ ) { $time = $1; } else { $time = 'day'; }
+
+my $rrd;
+
+$rrdtime = ${"sec".$time} || $time;
+
+$rrd = "$RRDCMD -s '-$rrdtime' ${$typeGraph.'_GRAPH'}";
+
+$rrd =~ s/\<D\>/$data/g;
+
+if (${$typeGraph.'_MAX'} =~ /$time/) 
+    {
+    $rrd =~ s/\{.*?\}//g;
+    $rrd =~ s/[\<\>]//g;
+    }
+else
+    {
+    $rrd =~ s/\<.*?\>//g;
+    $rrd =~ s/[\{\}]//g;
+    }
+
+if ($q->param("debug") eq "show")
+    {
+    esmith::cgi::genHeaderNonCacheable ($q, \%conf, "$TITLE");
+    print "$rrd";
+    exit;
+    }
+
+print $q->header(-type=>'image/gif',-expires=>"+60s");
+open(IMGIF,"$rrd |");
+binmode STDOUT;
+while(<IMGIF>) 
+	{print;}
+close(IMGIF);
+}
+
+sub generateFoot($)
+{
+my ($q) = @_;
+esmith::cgi::genFooter ($q);
+print $q->end_html;
+}

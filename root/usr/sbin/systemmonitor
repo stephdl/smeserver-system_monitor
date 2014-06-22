@@ -1,0 +1,935 @@
+#!/usr/bin/perl -w
+
+use esmith::config;
+use esmith::db;
+use esmith::ConfigDB;
+use sigtrap;
+use RRDs;
+use POSIX;
+
+$ENV {'PATH'} = '/bin:/sbin:/usr/bin:/usr/sbin:/usr/lib/sa';
+$ENV {'LANG'} = 'en_EN';
+
+my $config = esmith::ConfigDB->open;
+my $debug;
+my $ERR;
+
+my $RRDDIR = '/var/lib/rrdsm';
+my $RRDFILE = 'systemmonitor';
+my $CPUFILE = 'processors';
+my $DRIVEFILE = 'drive_';
+my $HOSTFILE = 'host_';
+my $IFACEFILE = 'iface_';
+my $UPSFILE = 'ups';
+my $SENSORSFILE = 'sensors';
+my $TOTALCPURRD = 'totalcpu';
+my $SYSTEMCPURRD = 'systemcpu';
+my $USERCPURRD = 'usercpu';
+my $NICECPURRD = 'nicecpu';
+my $IDLECPURRD = 'idlecpu';
+my $LOADRRD = 'load';
+my $PLISTRRD = 'plist';
+my $RUNQRRD = 'runq';
+my $MEMTOTALRRD = 'memtotal';
+my $MEMUSEDRRD = 'memused';
+my $MEMFREERRD = 'memfree';
+my $MEMACTUALUSEDRRD = 'memactualused';
+my $MEMACTUALFREERRD = 'memactualfree';
+my $MEMBUFFERSRRD = 'membuffers';
+my $MEMCACHEDRRD = 'memcached';
+my $SWAPTOTALRRD = 'swaptotal';
+my $SWAPUSEDRRD = 'swapused';
+my $SWAPFREERRD = 'swapfree';
+my $HDTOTALRRD = 'hdtotal';
+my $HDUSEDRRD = 'hdused';
+my $HDFREERRD = 'hdfree';
+my $UPTIMERRD = 'uptime';
+my $BYTESINRRD = 'bin';
+my $BYTESOUTRRD = 'bout';
+my $PACKETSINRRD = 'pin';
+my $PACKETSOUTRRD = 'pout';
+my $MINLATENCYRRD = 'minlatency';
+my $AVGLATENCYRRD = 'avglatency';
+my $MAXLATENCYRRD = 'maxlatency';
+my $LOSSRRD = 'loss';
+my $LINEVRRD = 'linev';
+my $LOADPCTRRD = 'loadpct';
+my $BCHARGERRD = 'bcharge';
+my $TIMELEFTRRD = 'timeleft';
+my $OUTPUTVRRD = 'outputv';
+my $ITEMPRRD = 'itemp';
+my $BATTVRRD = 'battv';
+my $IN0RRD = 'in0';
+my $IN1RRD = 'in1';
+my $IN2RRD = 'in2';
+my $IN3RRD = 'in3';
+my $IN4RRD = 'in4';
+my $IN5RRD = 'in5';
+my $IN6RRD = 'in6';
+my $IN7RRD = 'in7';
+my $IN8RRD = 'in8';
+my $FAN1RRD = 'fan1';
+my $FAN2RRD = 'fan2';
+my $FAN3RRD = 'fan3';
+my $FAN4RRD = 'fan4';
+my $FAN5RRD = 'fan5';
+my $TEMP1RRD = 'temp1';
+my $TEMP2RRD = 'temp2';
+my $TEMP3RRD = 'temp3';
+my $TEMP4RRD = 'temp4';
+my $VIDRRD = 'vid';
+my $SAMBAUSER = 'Samba';
+my $SAMBAUSERRRD = 'samba';
+
+my %conf;
+
+if (-e "/var/lock/$RRDFILE")
+    {
+    print "Already running!";
+    exit 1;
+    }
+
+sub trim($)
+{
+	my $string = shift;
+	$string =~ s/^\s+//;
+	$string =~ s/\s+$//;
+	return $string;
+}
+
+sub pinghost
+    {
+    local ( $host, $count, $interval ) = @_;
+    local ( $minlatency, $avglatency, $maxlatency, $loss, $pings);
+
+    unless(${'pid_'.$host} = fork)
+        {
+        $minlatency = 'U';
+        $avglatency = 'U';
+        $maxlatency = 'U';
+        $loss = '100';
+        $hostrrd = $HOSTFILE.$host;
+        $maxdelay = $interval * $count + 2;
+        if ($host ne "none")
+            {
+            if($host eq "gateway")
+            {
+                $host = `/sbin/route -n | /bin/egrep '^0\.' | /bin/awk '{ print \$2 }' | /bin/egrep '^[1-9]'` ||
+                        `/sbin/ifconfig | /bin/sed -ne '/P-t-P/p' | /bin/awk '{ print \$3 }' | /bin/cut -d: -f2` || 
+                        'down';
+                $host =~ s/^(\w+)/$1/;
+                chomp($host);
+                if ( $debug eq 'debug' ) 
+                {
+                    print 'Host : ' . $host;
+                }
+	
+            }
+            if ($host ne "down") 
+                { 
+                $pings = `/bin/ping -i $interval -c $count -q -n -w $maxdelay $host 2> /dev/null`; 
+    			if ( $debug eq 'debug' ) 
+    			{
+    				print 'Ping : ' . $pings;
+    			}
+                }
+            if ($pings)
+                {
+                if ($pings =~ /(\d+(,|\.)\d+)\/(\d+(,|\.)\d+)\/(\d+(,|\.)\d+)\/(\d+(,|\.)\d+) ms/) 
+                    { 
+                    $minlatency = $1/1000; 
+                    $avglatency = $3/1000; 
+                    $maxlatency = $5/1000; 
+                    }
+                if ($pings =~ /(\d+)% packet/) { $loss = $1; }
+                if ($pings =~ /(\d+)% loss/) { $loss = $1; }
+                }
+    
+            RRDs::create("$RRDDIR/$hostrrd.rrd","-s","60",
+                         "DS:$MINLATENCYRRD:GAUGE:180:0:U",
+                         "DS:$AVGLATENCYRRD:GAUGE:180:0:U",
+                         "DS:$MAXLATENCYRRD:GAUGE:180:0:U",
+                         "DS:$LOSSRRD:GAUGE:180:0:U",
+                         "RRA:MIN:0.5:1:1500",
+                         "RRA:MIN:0.5:5:600",
+                         "RRA:MIN:0.5:30:700",
+                         "RRA:MIN:0.5:120:775",
+                         "RRA:MIN:0.5:1440:797",
+                         "RRA:AVERAGE:0.5:1:1500",
+                         "RRA:AVERAGE:0.5:5:600",
+                         "RRA:AVERAGE:0.5:30:700",
+                         "RRA:AVERAGE:0.5:120:775",
+                         "RRA:AVERAGE:0.5:1440:797",
+                         "RRA:MAX:0.5:1:1500",
+                         "RRA:MAX:0.5:5:600",
+                         "RRA:MAX:0.5:30:700",
+                         "RRA:MAX:0.5:120:775",
+                         "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$hostrrd.rrd";
+            RRDs::update("$RRDDIR/$hostrrd.rrd",
+                         "N:$minlatency:$avglatency:$maxlatency:$loss");
+            $ERR=RRDs::error;
+        	if ( $ERR )
+        	{
+                    print "ERROR while updating $hostrrd.rrd: $ERR\n";
+                    rename("$RRDDIR/$hostrrd.rrd","$RRDDIR/$hostrrd.bad");
+        	}
+            }
+        exit;
+	}
+    }
+
+unless (fork)
+{
+    open (FILELOCK,">/var/lock/$RRDFILE");
+    print FILELOCK $$;
+    close FILELOCK;
+    &POSIX::setsid;
+
+    print "Damonizing systemmonitor...\n";
+    unlink("/var/log/systemmonitor.old") if -e "/var/log/systemmonitor.old";
+    rename("/var/log/systemmonitor","/var/log/systemmonitor.old") if -e "/var/log/systemmonitor";
+    open STDOUT,'>>/var/log/systemmonitor';
+    open STDERR,'>>/var/log/systemmonitor';
+    open STDIN, '</dev/null';
+ 
+    $SIG{QUIT} = sub { unlink("/var/lock/$RRDFILE"); exit 0; };
+    $SIG{TERM} = sub { unlink("/var/lock/$RRDFILE"); exit 0; };
+
+    while(1)
+        {
+        mkdir($RRDDIR) unless (-e $RRDDIR);
+	 
+        $debug = $config->get('systemmonitor')->prop('debug') || 'release';
+
+        tie %conf, 'esmith::config';
+        $status = db_get_prop(\%conf, $RRDFILE, 'status') || "disabled";
+        $upsstatus = db_get_prop(\%conf, 'nut', 'status') || "disabled";
+        if ($status eq "enabled")
+            {
+            $lastupdate = RRDs::last("$RRDDIR/$RRDFILE.rrd") || 0;
+            rename("$RRDDIR/$RRDFILE.stats","$RRDDIR/$RRDFILE.process");
+            `/usr/lib/sa/sadc 1 1 $RRDDIR/$RRDFILE.process > /dev/null 2>&1; /usr/lib/sa/sadc 1 1 $RRDDIR/$RRDFILE.stats > /dev/null 2>&1`;
+            @sardata = `/usr/bin/sadf -p -P ALL -- -qru -n DEV $RRDDIR/$RRDFILE.process 2> /dev/null`;
+            if ( $debug eq 'debug' ) 
+	     {
+	         foreach (@sardata) 
+                {    
+                    print 'SARData : ' . $_;
+                }
+	     }
+           unlink("$RRDDIR/$RRDFILE.process");
+
+            if($#sardata > 0 && $sardata[0] =~ /\s+(\d+)\s+(\d{10})/ && $1 >= 45 && $1 <= 135 && $2 > $lastupdate)
+                {    
+                ${$TOTALCPURRD} = 'U';
+                ${$SYSTEMCPURRD} = 'U';
+                ${$USERCPURRD} = 'U';
+                ${$NICECPURRD} = 'U';
+                ${$IDLECPURRD} = 'U';
+                ${$TOTALCPURRD.'0'} = 'U';
+                ${$SYSTEMCPURRD.'0'} = 'U';
+                ${$USERCPURRD.'0'} = 'U';
+                ${$NICECPURRD.'0'} = 'U';
+                ${$IDLECPURRD.'0'} = 'U';
+                ${$TOTALCPURRD.'1'} = 'U';
+                ${$SYSTEMCPURRD.'1'} = 'U';
+                ${$USERCPURRD.'1'} = 'U';
+                ${$NICECPURRD.'1'} = 'U';
+                ${$IDLECPURRD.'1'} = 'U';
+                ${$TOTALCPURRD.'2'} = 'U';
+                ${$SYSTEMCPURRD.'2'} = 'U';
+                ${$USERCPURRD.'2'} = 'U';
+                ${$NICECPURRD.'2'} = 'U';
+                ${$IDLECPURRD.'2'} = 'U';
+                ${$TOTALCPURRD.'3'} = 'U';
+                ${$SYSTEMCPURRD.'3'} = 'U';
+                ${$USERCPURRD.'3'} = 'U';
+                ${$NICECPURRD.'3'} = 'U';
+                ${$IDLECPURRD.'3'} = 'U';
+                $load = 'U';
+                $plist = 'U';
+                $runq = 'U';
+                $memtotal = 'U';
+                $memused = 'U';
+                $memfree = 'U';
+                $memactualused = 'U';
+                $memactualfree = 'U';
+                $membuffers = 'U';
+                $memcached = 'U';
+                $swaptotal = 'U';
+                $swapused = 'U';
+                $swapfree = 'U';
+                $hdtotal = 'U';
+                $hdused = 'U';
+                $hdfree = 'U';
+                $uptime = 'U';
+
+                open(FILE,"</proc/uptime"); @filedata = <FILE>; close(FILE);
+                if ($filedata[0] =~ /^(\d+(,|\.)\d+)/) { $uptime = $1; };  
+
+                $hdused = 0;
+                $hdfree = 0;
+                @gethd = `/bin/df --block-size=1 --local -P | grep '^/dev'`;
+                if ( $debug eq 'debug' ) 
+	         {
+	             foreach (@gethd) 
+                    {    
+                        print 'getHD : ' . $_;
+                    }
+	         }
+
+ 		  $drives = '';
+                foreach (@gethd)
+                    {
+                    if(/^\/dev\/(\S+)\s+\d+\s+(\d+)\s+(\d+)\s+\d+\%/) 
+			{
+			$drive = $1;
+			$drives .= $drive." "; 
+
+			${$drive.'used'} = $2;
+			${$drive.'free'} = $3;
+                	${$drive.'total'} = ${$drive.'used'} + ${$drive.'free'};
+
+			$hdused += $2; 
+			$hdfree += $3; 
+                	$hdtotal = $hdused + $hdfree;
+			}
+                    }
+
+                $badifaces = `/sbin/ifconfig -a | /bin/sed -ne '/^\\w\\+[0-9]/{;x;n;/inet addr/bd;x;s/^\\(\\w\\+[0-9]\\+\\).*/\\1/p;:d;}'` || 'none'; chomp($badifaces);
+                if ( $debug eq 'debug' ) 
+                {
+                    print 'badifaces : ' . @badifaces;
+                }
+                $ifaces = '';
+                foreach(@sardata)
+                    {
+                    if(/all\s+\%idle\s+(\d+(,|\.)\d+)/) { ${$IDLECPURRD}=$1/100; ${$TOTALCPURRD}=1-${$IDLECPURRD}; }
+                    if(/all\s+\%system\s+(\d+(,|\.)\d+)/) { ${$SYSTEMCPURRD}=$1/100; }
+                    if(/all\s+\%user\s+(\d+(,|\.)\d+)/) { ${$USERCPURRD}=$1/100; }
+                    if(/all\s+\%nice\s+(\d+(,|\.)\d+)/) { ${$NICECPURRD}=$1/100; }
+                    if(/cpu0\s+\%idle\s+(\d+(,|\.)\d+)/) { ${$IDLECPURRD.'0'}=$1/100; ${$TOTALCPURRD.'0'}=1-${$IDLECPURRD.'0'}; }
+                    if(/cpu0\s+\%system\s+(\d+(,|\.)\d+)/) { ${$SYSTEMCPURRD.'0'}=$1/100; }
+                    if(/cpu0\s+\%user\s+(\d+(,|\.)\d+)/) { ${$USERCPURRD.'0'}=$1/100; }
+                    if(/cpu0\s+\%nice\s+(\d+(,|\.)\d+)/) { ${$NICECPURRD.'0'}=$1/100; }
+                    if(/cpu1\s+\%idle\s+(\d+(,|\.)\d+)/) { ${$IDLECPURRD.'1'}=$1/100; ${$TOTALCPURRD.'1'}=1-${$IDLECPURRD.'1'}; }
+                    if(/cpu1\s+\%system\s+(\d+(,|\.)\d+)/) { ${$SYSTEMCPURRD.'1'}=$1/100; }
+                    if(/cpu1\s+\%user\s+(\d+(,|\.)\d+)/) { ${$USERCPURRD.'1'}=$1/100; }
+                    if(/cpu1\s+\%nice\s+(\d+(,|\.)\d+)/) { ${$NICECPURRD.'1'}=$1/100; }
+                    if(/cpu2\s+\%idle\s+(\d+(,|\.)\d+)/) { ${$IDLECPURRD.'2'}=$1/100; ${$TOTALCPURRD.'2'}=1-${$IDLECPURRD.'2'}; }
+                    if(/cpu2\s+\%system\s+(\d+(,|\.)\d+)/) { ${$SYSTEMCPURRD.'2'}=$1/100; }
+                    if(/cpu2\s+\%user\s+(\d+(,|\.)\d+)/) { ${$USERCPURRD.'2'}=$1/100; }
+                    if(/cpu2\s+\%nice\s+(\d+(,|\.)\d+)/) { ${$NICECPURRD.'2'}=$1/100; }
+                    if(/cpu3\s+\%idle\s+(\d+(,|\.)\d+)/) { ${$IDLECPURRD.'3'}=$1/100; ${$TOTALCPURRD.'3'}=1-${$IDLECPURRD.'3'}; }
+                    if(/cpu3\s+\%system\s+(\d+(,|\.)\d+)/) { ${$SYSTEMCPURRD.'3'}=$1/100; }
+                    if(/cpu3\s+\%user\s+(\d+(,|\.)\d+)/) { ${$USERCPURRD.'3'}=$1/100; }
+                    if(/cpu3\s+\%nice\s+(\d+(,|\.)\d+)/) { ${$NICECPURRD.'3'}=$1/100; }
+                    if(/ldavg-1\s+(\d+(,|\.)\d+)/) { $load=$1; }
+                    if(/plist-sz\s+(\d+)/) { $plist=$1; }
+                    if(/runq-sz\s+(\d+)/) { $runq=$1; }
+                    if(/kbmemused\s+(\d+)/) { $memactualused=$1*1024; }
+                    if(/kbmemfree\s+(\d+)/) { $memactualfree=$1*1024; }
+                    if(/kbbuffers\s+(\d+)/) { $membuffers=$1*1024; }
+                    if(/kbcached\s+(\d+)/) { $memcached=$1*1024; }
+                    if(/kbswpused\s+(\d+)/) { $swapused=$1*1024; }
+                    if(/kbswpfree\s+(\d+)/) { $swapfree=$1*1024; }
+                    if(/(\w+[0-9]+)\s+rxpck/) 
+                        { 
+                        $iface = $1;
+                        unless($badifaces =~ /$iface/)
+                            { 
+                            $ifaces .= $iface." "; 
+                            } 
+                        ${$iface.'bin'} = 'U';
+                        ${$iface.'bout'} = 'U';
+                        ${$iface.'pin'} = 'U';
+                        ${$iface.'pout'} = 'U';
+                        } 
+                    if(/(\w+)\s+rxbyt\/s\s+(\d+(,|\.)\d+)/) { ${$1.'bin'} = $2; }
+                    if(/(\w+)\s+txbyt\/s\s+(\d+(,|\.)\d+)/) { ${$1.'bout'} = $2; }
+                    if(/(\w+)\s+rxpck\/s\s+(\d+(,|\.)\d+)/) { ${$1.'pin'} = $2; }
+                    if(/(\w+)\s+txpck\/s\s+(\d+(,|\.)\d+)/) { ${$1.'pout'} = $2; }
+                    }
+                $memtotal = $memactualused + $memactualfree;
+                $memused = $memactualused - $memcached - $membuffers;
+                $memfree = $memactualfree + $memcached + $membuffers;
+                $swaptotal = $swapused + $swapfree;
+
+                RRDs::create("$RRDDIR/$RRDFILE.rrd","-s","60",
+                             "DS:$TOTALCPURRD:GAUGE:180:0:U",
+                             "DS:$SYSTEMCPURRD:GAUGE:180:0:U",
+                             "DS:$USERCPURRD:GAUGE:180:0:U",
+                             "DS:$NICECPURRD:GAUGE:180:0:U",
+                             "DS:$IDLECPURRD:GAUGE:180:0:U",
+                             "DS:$LOADRRD:GAUGE:180:0:U",
+                             "DS:$PLISTRRD:GAUGE:180:0:U",
+                             "DS:$RUNQRRD:GAUGE:180:0:U",
+                             "DS:$MEMTOTALRRD:GAUGE:180:0:U",
+                             "DS:$MEMUSEDRRD:GAUGE:180:0:U",
+                             "DS:$MEMFREERRD:GAUGE:180:0:U",
+                             "DS:$MEMACTUALUSEDRRD:GAUGE:180:0:U",
+                             "DS:$MEMACTUALFREERRD:GAUGE:180:0:U",
+                             "DS:$MEMBUFFERSRRD:GAUGE:180:0:U",
+                             "DS:$MEMCACHEDRRD:GAUGE:180:0:U",
+                             "DS:$SWAPTOTALRRD:GAUGE:180:0:U",
+                             "DS:$SWAPUSEDRRD:GAUGE:180:0:U",
+                             "DS:$SWAPFREERRD:GAUGE:180:0:U",
+                             "DS:$HDTOTALRRD:GAUGE:180:0:U",
+                             "DS:$HDUSEDRRD:GAUGE:180:0:U",
+                             "DS:$HDFREERRD:GAUGE:180:0:U",
+                             "DS:$UPTIMERRD:GAUGE:180:0:U",
+                             "RRA:MIN:0.5:1:1500",
+                             "RRA:MIN:0.5:5:600",
+                             "RRA:MIN:0.5:30:700",
+                             "RRA:MIN:0.5:120:775",
+                             "RRA:MIN:0.5:1440:797",
+                             "RRA:AVERAGE:0.5:1:1500",
+                             "RRA:AVERAGE:0.5:5:600",
+                             "RRA:AVERAGE:0.5:30:700",
+                             "RRA:AVERAGE:0.5:120:775",
+                             "RRA:AVERAGE:0.5:1440:797",
+                             "RRA:MAX:0.5:1:1500",
+                             "RRA:MAX:0.5:5:600",
+                             "RRA:MAX:0.5:30:700",
+                             "RRA:MAX:0.5:120:775",
+                             "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$RRDFILE.rrd"; 
+                RRDs::update("$RRDDIR/$RRDFILE.rrd",
+                             "N:${$TOTALCPURRD}:${$SYSTEMCPURRD}:${$USERCPURRD}:${$NICECPURRD}:${$IDLECPURRD}:$load:" .
+                             "$plist:$runq:" .
+                             "$memtotal:$memused:$memfree:" .
+                             "$memactualused:$memactualfree:" .
+                             "$membuffers:$memcached:" .
+                             "$swaptotal:$swapused:$swapfree:" .
+                             "$hdtotal:$hdused:$hdfree:" .
+                             "$uptime");
+                $ERR=RRDs::error;                                        
+                if ($ERR )    
+                {    
+                    print "ERROR while updating $RRDFILE.rrd: $ERR\n";                             
+                    rename("$RRDDIR/$RRDFILE.rrd","$RRDDIR/$RRDFILE.bad");                                                      
+                }                   
+
+                RRDs::create("$RRDDIR/$CPUFILE.rrd","-s","60",
+                             "DS:${TOTALCPURRD}:GAUGE:180:0:U",
+                             "DS:${SYSTEMCPURRD}:GAUGE:180:0:U",
+                             "DS:${USERCPURRD}:GAUGE:180:0:U",
+                             "DS:${NICECPURRD}:GAUGE:180:0:U",
+                             "DS:${IDLECPURRD}:GAUGE:180:0:U",
+                             "DS:${TOTALCPURRD}0:GAUGE:180:0:U",
+                             "DS:${SYSTEMCPURRD}0:GAUGE:180:0:U",
+                             "DS:${USERCPURRD}0:GAUGE:180:0:U",
+                             "DS:${NICECPURRD}0:GAUGE:180:0:U",
+                             "DS:${IDLECPURRD}0:GAUGE:180:0:U",
+                             "DS:${TOTALCPURRD}1:GAUGE:180:0:U",
+                             "DS:${SYSTEMCPURRD}1:GAUGE:180:0:U",
+                             "DS:${USERCPURRD}1:GAUGE:180:0:U",
+                             "DS:${NICECPURRD}1:GAUGE:180:0:U",
+                             "DS:${IDLECPURRD}1:GAUGE:180:0:U",
+                             "DS:${TOTALCPURRD}2:GAUGE:180:0:U",
+                             "DS:${SYSTEMCPURRD}2:GAUGE:180:0:U",
+                             "DS:${USERCPURRD}2:GAUGE:180:0:U",
+                             "DS:${NICECPURRD}2:GAUGE:180:0:U",
+                             "DS:${IDLECPURRD}2:GAUGE:180:0:U",
+                             "DS:${TOTALCPURRD}3:GAUGE:180:0:U",
+                             "DS:${SYSTEMCPURRD}3:GAUGE:180:0:U",
+                             "DS:${USERCPURRD}3:GAUGE:180:0:U",
+                             "DS:${NICECPURRD}3:GAUGE:180:0:U",
+                             "DS:${IDLECPURRD}3:GAUGE:180:0:U",
+                             "RRA:MIN:0.5:1:1500",
+                             "RRA:MIN:0.5:5:600",
+                             "RRA:MIN:0.5:30:700",
+                             "RRA:MIN:0.5:120:775",
+                             "RRA:MIN:0.5:1440:797",
+                             "RRA:AVERAGE:0.5:1:1500",
+                             "RRA:AVERAGE:0.5:5:600",
+                             "RRA:AVERAGE:0.5:30:700",
+                             "RRA:AVERAGE:0.5:120:775",
+                             "RRA:AVERAGE:0.5:1440:797",
+                             "RRA:MAX:0.5:1:1500",
+                             "RRA:MAX:0.5:5:600",
+                             "RRA:MAX:0.5:30:700",
+                             "RRA:MAX:0.5:120:775",
+                             "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$CPUFILE.rrd"; 
+                RRDs::update("$RRDDIR/$CPUFILE.rrd",
+                             "N:${$TOTALCPURRD}:${$SYSTEMCPURRD}:${$USERCPURRD}:${$NICECPURRD}:${$IDLECPURRD}:" .
+                             "${$TOTALCPURRD.'0'}:${$SYSTEMCPURRD.'0'}:${$USERCPURRD.'0'}:${$NICECPURRD.'0'}:${$IDLECPURRD.'0'}:" .
+                             "${$TOTALCPURRD.'1'}:${$SYSTEMCPURRD.'1'}:${$USERCPURRD.'1'}:${$NICECPURRD.'1'}:${$IDLECPURRD.'1'}:" .
+                             "${$TOTALCPURRD.'2'}:${$SYSTEMCPURRD.'2'}:${$USERCPURRD.'2'}:${$NICECPURRD.'2'}:${$IDLECPURRD.'2'}:" .
+                             "${$TOTALCPURRD.'3'}:${$SYSTEMCPURRD.'3'}:${$USERCPURRD.'3'}:${$NICECPURRD.'3'}:${$IDLECPURRD.'3'}"); 
+                $ERR=RRDs::error;                            
+                if ($ERR )                            
+                {                            
+                    print "ERROR while updating $CPUFILE.rrd: $ERR\n";                                         
+                    rename("$RRDDIR/$CPUFILE.rrd","$RRDDIR/$CPUFILE.bad");                    
+                }                
+
+                @cpuinf = `cat /proc/cpuinfo |grep processor|cut -f2 -d":"`;
+                if ( $debug eq 'debug' ) 
+	         {
+	             foreach (@cpuinf ) 
+                    {    
+                        print 'cpuinf : ' . $_;
+                    }
+	         }
+
+                foreach $proce (@cpuinf)
+                { 
+		    $proce = trim($proce);
+                    RRDs::create("$RRDDIR/" . $CPUFILE . $proce . ".rrd","-s","60",
+                                 "DS:${TOTALCPURRD}" . $proce . ":GAUGE:180:0:U",
+                                 "DS:${SYSTEMCPURRD}" . $proce . ":GAUGE:180:0:U",
+                                 "DS:${USERCPURRD}" . $proce . ":GAUGE:180:0:U",
+                                 "DS:${NICECPURRD}" . $proce . ":GAUGE:180:0:U",
+                                 "DS:${IDLECPURRD}" . $proce . ":GAUGE:180:0:U",
+                                 "RRA:MIN:0.5:1:1500",
+                                 "RRA:AVERAGE:0.5:1:1500",
+                                 "RRA:MAX:0.5:1:1500") unless -e "$RRDDIR/" . $CPUFILE . $proce .".rrd";
+                    RRDs::update("$RRDDIR/".$CPUFILE.$proce.".rrd",
+                                 "N:${$TOTALCPURRD.$proce}:${$SYSTEMCPURRD.$proce}:${$USERCPURRD.$proce}:${$NICECPURRD.$proce}:${$IDLECPURRD.$proce}");
+                    $ERR=RRDs::error;        
+                    if ($ERR )        
+                    {        
+                        print "ERROR while updating " . $CPUFILE . $proce . ".rrd: $ERR\n";                       
+                        rename("$RRDDIR/" . $CPUFILE . $proce . ".rrd","$RRDDIR/" . $CPUFILE . $proce . ".bad");
+                    }                          
+                }
+                foreach(split(/ /,$drives))
+                    {
+                    $drive = $_;
+                    $drive2 = $drive;
+                    $drive2 =~ s/\//_/g;
+                    RRDs::create("$RRDDIR/$DRIVEFILE$drive2.rrd","-s","60",
+                                 "DS:$HDTOTALRRD:GAUGE:180:0:U",
+                                 "DS:$HDUSEDRRD:GAUGE:180:0:U",
+                                 "DS:$HDFREERRD:GAUGE:180:0:U",
+                                 "RRA:MIN:0.5:1:1500",
+                                 "RRA:MIN:0.5:5:600",
+                                 "RRA:MIN:0.5:30:700",
+                                 "RRA:MIN:0.5:120:775",
+                                 "RRA:MIN:0.5:1440:797",
+                                 "RRA:AVERAGE:0.5:1:1500",
+                                 "RRA:AVERAGE:0.5:5:600",
+                                 "RRA:AVERAGE:0.5:30:700",
+                                 "RRA:AVERAGE:0.5:120:775",
+                                 "RRA:AVERAGE:0.5:1440:797",
+                                 "RRA:MAX:0.5:1:1500",
+                                 "RRA:MAX:0.5:5:600",
+                                 "RRA:MAX:0.5:30:700",
+                                 "RRA:MAX:0.5:120:775",
+                                 "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$DRIVEFILE$drive2.rrd";
+                    RRDs::update("$RRDDIR/$DRIVEFILE$drive2.rrd",
+                                 "N:${$drive.'total'}:${$drive.'used'}:${$drive.'free'}");
+                    $ERR=RRDs::error;
+                    if ($ERR )
+                    {
+                        print "ERROR while updating $DRIVEFILE$drive2.rrd: $ERR\n";
+                        rename("$RRDDIR/$DRIVEFILE$drive2.rrd","$RRDDIR/$DRIVEFILE$drive2.bad");
+                    }                    
+                    }
+
+                foreach(split(/ /,$ifaces))
+                    {
+                    $iface = $_;
+                    RRDs::create("$RRDDIR/$IFACEFILE$iface.rrd","-s","60",
+                                 "DS:$BYTESINRRD:GAUGE:180:0:U",
+                                 "DS:$BYTESOUTRRD:GAUGE:180:0:U",
+                                 "DS:$PACKETSINRRD:GAUGE:180:0:U",
+                                 "DS:$PACKETSOUTRRD:GAUGE:180:0:U",
+                                 "RRA:MIN:0.5:1:1500",
+                                 "RRA:MIN:0.5:5:600",
+                                 "RRA:MIN:0.5:30:700",
+                                 "RRA:MIN:0.5:120:775",
+                                 "RRA:MIN:0.5:1440:797",
+                                 "RRA:AVERAGE:0.5:1:1500",
+                                 "RRA:AVERAGE:0.5:5:600",
+                                 "RRA:AVERAGE:0.5:30:700",
+                                 "RRA:AVERAGE:0.5:120:775",
+                                 "RRA:AVERAGE:0.5:1440:797",
+                                 "RRA:MAX:0.5:1:1500",
+                                 "RRA:MAX:0.5:5:600",
+                                 "RRA:MAX:0.5:30:700",
+                                 "RRA:MAX:0.5:120:775",
+                                 "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$IFACEFILE$iface.rrd";
+                    RRDs::update("$RRDDIR/$IFACEFILE$iface.rrd",
+                                 "N:${$iface.'bin'}:${$iface.'bout'}:${$iface.'pin'}:${$iface.'pout'}");
+                    $ERR=RRDs::error;
+                    if ($ERR )
+                    {
+                        print "ERROR while updating $IFACEFILE$iface.rrd: $ERR\n";        
+                        rename("$RRDDIR/$IFACEFILE$iface.rrd","$RRDDIR/$IFACEFILE$iface.bad");                
+                    }
+                    }
+
+                if ( $upsstatus eq 'enabled')
+                    {
+                    $count=0;
+                    @upses = `cat /etc/ups/ups.conf | sed -ne 's/\\[\\(.*\\)\\]/\\1/p'`;
+                    if ( $debug eq 'debug' ) 
+	             {
+	                 foreach (@upses ) 
+                        {    
+                            print 'upses : ' . $_;
+                        }
+	             }
+
+                    foreach(@upses)
+                        {
+                        chomp;
+                        $upsname="$_\@localhost";
+                        $count++;
+                        if($count>1) { $upsext = "-$count"; } else { $upsext = ""; }
+                        $linev = 'U';
+                        $loadpct = 'U';
+                        $bcharge = 'U';
+                        $timeleft = 'U';
+                        $outputv = 'U';
+                        $itemp = 'U';
+                        $battv = 'U';
+                        @upsdata = `/usr/bin/upsc $upsname 2> /dev/null`;
+                        if ( $debug eq 'debug' ) 
+	                 {
+	                     foreach (@upsdata ) 
+                            {    
+                                print 'upsdata : ' . $_;
+                            }
+	                 }
+                        foreach(@upsdata)
+                            {
+                            if(/^UTILITY\s*:\s*(\d+(,|\.)\d+)/) { $linev=$1; }
+                            if(/^LOADPCT\s*:\s*(\d+(,|\.)\d+)/) { $loadpct=$1; }
+                            if(/^BATTPCT\s*:\s*(\d+(,|\.)\d+)/) { $bcharge=$1; }
+                            if(/^BATT_RUNTIME\s*:\s*(\d+)/) { $timeleft=$1/60; }
+                            if(/^OUTVOLT\s*:\s*(\d+(,|\.)\d+)/) { $outputv=$1; }
+                            if(/^UPSTEMP\s*:\s*(\d+(,|\.)\d+)/) { $itemp=$1; }
+                            if(/^BATTVOLT\s*:\s*(\d+(,|\.)\d+)/) { $battv=$1; }
+                            }
+                        if ( $loadpct ne 'U' || $bcharge ne 'U' || $timeleft ne 'U' || $itemp ne 'U' || $battv ne 'U' )
+                            {
+                            RRDs::create("$RRDDIR/$UPSFILE$upsext.rrd","-s","60",
+                                         "DS:$LINEVRRD:GAUGE:180:0:U",
+                                         "DS:$LOADPCTRRD:GAUGE:180:0:U",
+                                         "DS:$BCHARGERRD:GAUGE:180:0:U",
+                                         "DS:$TIMELEFTRRD:GAUGE:180:0:U",
+                                         "DS:$OUTPUTVRRD:GAUGE:180:0:U",
+                                         "DS:$ITEMPRRD:GAUGE:180:0:U",
+                                         "DS:$BATTVRRD:GAUGE:180:0:U",
+                                         "RRA:MIN:0.5:1:1500",
+                                         "RRA:MIN:0.5:5:600",
+                                         "RRA:MIN:0.5:30:700",
+                                         "RRA:MIN:0.5:120:775",
+                                         "RRA:MIN:0.5:1440:797",
+                                         "RRA:AVERAGE:0.5:1:1500",
+                                         "RRA:AVERAGE:0.5:5:600",
+                                         "RRA:AVERAGE:0.5:30:700",
+                                         "RRA:AVERAGE:0.5:120:775",
+                                         "RRA:AVERAGE:0.5:1440:797",
+                                         "RRA:MAX:0.5:1:1500",
+                                         "RRA:MAX:0.5:5:600",
+                                         "RRA:MAX:0.5:30:700",
+                                         "RRA:MAX:0.5:120:775",
+                                         "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$UPSFILE$upsext.rrd";
+                            RRDs::update("$RRDDIR/$UPSFILE$upsext.rrd",
+                                         "N:$linev:$loadpct:$bcharge:$timeleft:$outputv:$itemp:$battv");
+                            $ERR=RRDs::error;                            
+                            if ($ERR )                            
+                            {                            
+                                print "ERROR while updating $UPSFILE$upsext.rrd: $ERR\n";    
+                                rename("$RRDDIR/$UPSFILE$upsext.rrd","$RRDDIR/$UPSFILE$upsext.bad");        
+                            }                            
+                            }
+                        }
+                    }
+                else
+                    {
+                    if( -e '/sbin/apcaccess')
+                        {
+                        $linev = 'U';
+                        $loadpct = 'U';
+                        $bcharge = 'U';
+                        $timeleft = 'U';
+                        $outputv = 'U';
+                        $itemp = 'U';
+                        $battv = 'U';
+                        @apcdata = `/sbin/apcaccess status 2> /dev/null`;
+                        if ( $debug eq 'debug' ) 
+	                 {
+	                     foreach (@apcdata ) 
+                            {    
+                                print 'apcdata : ' . $_;
+                            }
+	                 }
+
+                        foreach(@apcdata)
+                            {
+                            if(/^LINEV\s*:\s*(\d+(,|\.)\d+)/) { $linev=$1; }
+                            if(/^LOADPCT\s*:\s*(\d+(,|\.)\d+)/) { $loadpct=$1; }
+                            if(/^BCHARGE\s*:\s*(\d+(,|\.)\d+)/) { $bcharge=$1; }
+                            if(/^TIMELEFT\s*:\s*(\d+(,|\.)\d+)/) { $timeleft=$1; }
+                            if(/^OUTPUTV\s*:\s*(\d+(,|\.)\d+)/) { $outputv=$1; }
+                            if(/^ITEMP\s*:\s*(\d+(,|\.)\d+)/) { $itemp=$1; }
+                            if(/^BATTV\s*:\s*(\d+(,|\.)\d+)/) { $battv=$1; }
+                            }
+                        if ( $loadpct ne 'U' || $bcharge ne 'U' || $timeleft ne 'U' || $itemp ne 'U' || $battv ne 'U' )
+                            {
+                            RRDs::create("$RRDDIR/$UPSFILE.rrd","-s","60",
+                                         "DS:$LINEVRRD:GAUGE:180:0:U",
+                                         "DS:$LOADPCTRRD:GAUGE:180:0:U",
+                                         "DS:$BCHARGERRD:GAUGE:180:0:U",
+                                         "DS:$TIMELEFTRRD:GAUGE:180:0:U",
+                                         "DS:$OUTPUTVRRD:GAUGE:180:0:U",
+                                         "DS:$ITEMPRRD:GAUGE:180:0:U",
+                                         "DS:$BATTVRRD:GAUGE:180:0:U",
+                                         "RRA:MIN:0.5:1:1500",
+                                         "RRA:MIN:0.5:5:600",
+                                         "RRA:MIN:0.5:30:700",
+                                         "RRA:MIN:0.5:120:775",
+                                         "RRA:MIN:0.5:1440:797",
+                                         "RRA:AVERAGE:0.5:1:1500",
+                                         "RRA:AVERAGE:0.5:5:600",
+                                         "RRA:AVERAGE:0.5:30:700",
+                                         "RRA:AVERAGE:0.5:120:775",
+                                         "RRA:AVERAGE:0.5:1440:797",
+                                         "RRA:MAX:0.5:1:1500",
+                                         "RRA:MAX:0.5:5:600",
+                                         "RRA:MAX:0.5:30:700",
+                                         "RRA:MAX:0.5:120:775",
+                                         "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$UPSFILE.rrd";
+                            RRDs::update("$RRDDIR/$UPSFILE.rrd",
+                                         "N:$linev:$loadpct:$bcharge:$timeleft:$outputv:$itemp:$battv");
+                            $ERR=RRDs::error;
+                            if ($ERR )
+                            {
+                                print "ERROR while updating $UPSFILE.rrd: $ERR\n";
+                                rename("$RRDDIR/$UPSFILE.rrd","$RRDDIR/$UPSFILE.bad");
+                            }                            
+                            }
+                        }
+    
+                    if( -e '/etc/apcupsd/second/apcaccess')
+                        {
+                        $linev = 'U';
+                        $loadpct = 'U';
+                        $bcharge = 'U';
+                        $timeleft = 'U';
+                        $outputv = 'U';
+                        $itemp = 'U';
+                        $battv = 'U';
+                        @apcdata = `/etc/apcupsd/second/apcaccess status 2> /dev/null`;
+                        if ( $debug eq 'debug' ) 
+	                 {
+	                     foreach (@apcdata ) 
+                            {    
+                                print 'apcdata2 : ' . $_;
+                            }
+	                 }
+                        foreach(@apcdata)
+                            {
+                            if(/^LINEV\s*:\s*(\d+(,|\.)\d+)/) { $linev=$1; }
+                            if(/^LOADPCT\s*:\s*(\d+(,|\.)\d+)/) { $loadpct=$1; }
+                            if(/^BCHARGE\s*:\s*(\d+(,|\.)\d+)/) { $bcharge=$1; }
+                            if(/^TIMELEFT\s*:\s*(\d+(,|\.)\d+)/) { $timeleft=$1; }
+                            if(/^OUTPUTV\s*:\s*(\d+(,|\.)\d+)/) { $outputv=$1; }
+                            if(/^ITEMP\s*:\s*(\d+(,|\.)\d+)/) { $itemp=$1; }
+                            if(/^BATTV\s*:\s*(\d+(,|\.)\d+)/) { $battv=$1; }
+                            }
+                        if ( $loadpct ne 'U' || $bcharge ne 'U' || $timeleft ne 'U' || $itemp ne 'U' || $battv ne 'U' )
+                            {
+                            RRDs::create("$RRDDIR/${UPSFILE}-2.rrd","-s","60",
+                                         "DS:$LINEVRRD:GAUGE:180:0:U",
+                                         "DS:$LOADPCTRRD:GAUGE:180:0:U",
+                                         "DS:$BCHARGERRD:GAUGE:180:0:U",
+                                         "DS:$TIMELEFTRRD:GAUGE:180:0:U",
+                                         "DS:$OUTPUTVRRD:GAUGE:180:0:U",
+                                         "DS:$ITEMPRRD:GAUGE:180:0:U",
+                                         "DS:$BATTVRRD:GAUGE:180:0:U",
+                                         "RRA:MIN:0.5:1:1500",
+                                         "RRA:MIN:0.5:5:600",
+                                         "RRA:MIN:0.5:30:700",
+                                         "RRA:MIN:0.5:120:775",
+                                         "RRA:MIN:0.5:1440:797",
+                                         "RRA:AVERAGE:0.5:1:1500",
+                                         "RRA:AVERAGE:0.5:5:600",
+                                         "RRA:AVERAGE:0.5:30:700",
+                                         "RRA:AVERAGE:0.5:120:775",
+                                         "RRA:AVERAGE:0.5:1440:797",
+                                         "RRA:MAX:0.5:1:1500",
+                                         "RRA:MAX:0.5:5:600",
+                                         "RRA:MAX:0.5:30:700",
+                                         "RRA:MAX:0.5:120:775",
+                                         "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/${UPSFILE}-2.rrd";
+                            RRDs::update("$RRDDIR/${UPSFILE}-2.rrd",
+                                         "N:$linev:$loadpct:$bcharge:$timeleft:$outputv:$itemp:$battv");
+                            $ERR=RRDs::error;                                                   
+                            if ($ERR )                                                  
+                            {
+                                print "ERROR while updating ${UPSFILE}-2.rrd: $ERR\n";
+                                rename("$RRDDIR/${UPSFILE}-2.rrd","$RRDDIR/${UPSFILE}-2.bad");
+                            }
+                            }
+                        }
+                    }
+
+                if( -e '/usr/bin/sensors')
+                    {
+                    my $check = `/sbin/lsmod 2> /dev/null`;
+                    if ( $debug eq 'debug' ) 
+	            {
+                        print 'check_sensors : ' . $check;
+                    }
+
+                    if( $check =~ /i2c_/ )
+                        {
+                        $in0 = 'U';
+                        $in1 = 'U';
+                        $in2 = 'U';
+                        $in3 = 'U';
+                        $in4 = 'U';
+                        $in5 = 'U';
+                        $in6 = 'U';
+                        $in7 = 'U';
+                        $in8 = 'U';
+                        $fan1 = 'U';
+                        $fan2 = 'U';
+                        $fan3 = 'U';
+                        $fan4 = 'U';
+                        $fan5 = 'U';
+                        $temp1 = 'U';
+                        $temp2 = 'U';
+                        $temp3 = 'U';
+                        $temp4 = 'U';
+                        $vid = 'U';
+                        @sensordata = `/usr/bin/sensors -u 2> /dev/null`;
+                        if ( $debug eq 'debug' ) 
+	                {
+	                    foreach (@sensordata ) 
+                            {    
+                                print 'sensordata : ' . $_;
+                            }
+	                }
+
+                        foreach(@sensordata)
+                            {
+                            if(/(-?\d+(,|\.)\d+) \(in0\)/) { $in0=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in1\)/) { $in1=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in2\)/) { $in2=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in3\)/) { $in3=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in4\)/) { $in4=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in5\)/) { $in5=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in6\)/) { $in6=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in7\)/) { $in7=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(in8\)/) { $in8=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(fan1?\)/) { $fan1=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(fan2\)/) { $fan2=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(fan3\)/) { $fan3=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(fan4\)/) { $fan4=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(fan5\)/) { $fan5=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(temp1?\)/) { $temp1=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(temp2\)/) { $temp2=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(temp3\)/) { $temp3=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(temp4\)/) { $temp4=$1; }
+                            if(/(-?\d+(,|\.)\d+) \(vid\)/) { $vid=$1; }
+                            }
+                        if ( $in0 ne 'U' || $in1 ne 'U' || $in2 ne 'U' || $in3 ne 'U' || $in4 ne 'U' || $in5 ne 'U' || $in6 ne 'U' ||
+                             $in7 ne 'U' || $in8 ne 'U' || $fan1 ne 'U' || $fan2 ne 'U' || $fan3 ne 'U' || $fan4 ne 'U' || $fan5 ne 'U' || 
+                             $temp1 ne 'U' || $temp2 ne 'U' || $temp3 ne 'U' || $temp4 ne 'U' || $vid ne 'U' )
+                            {
+                            RRDs::create("$RRDDIR/${SENSORSFILE}.rrd","-s","60",
+                                         "DS:$IN0RRD:GAUGE:180:U:U",
+                                         "DS:$IN1RRD:GAUGE:180:U:U",
+                                         "DS:$IN2RRD:GAUGE:180:U:U",
+                                         "DS:$IN3RRD:GAUGE:180:U:U",
+                                         "DS:$IN4RRD:GAUGE:180:U:U",
+                                         "DS:$IN5RRD:GAUGE:180:U:U",
+                                         "DS:$IN6RRD:GAUGE:180:U:U",
+                                         "DS:$IN7RRD:GAUGE:180:U:U",
+                                         "DS:$IN8RRD:GAUGE:180:U:U",
+                                         "DS:$FAN1RRD:GAUGE:180:0:U",
+                                         "DS:$FAN2RRD:GAUGE:180:0:U",
+                                         "DS:$FAN3RRD:GAUGE:180:0:U",
+                                         "DS:$FAN4RRD:GAUGE:180:0:U",
+                                         "DS:$FAN5RRD:GAUGE:180:0:U",
+                                         "DS:$TEMP1RRD:GAUGE:180:U:U",
+                                         "DS:$TEMP2RRD:GAUGE:180:U:U",
+                                         "DS:$TEMP3RRD:GAUGE:180:U:U",
+                                         "DS:$TEMP4RRD:GAUGE:180:U:U",
+                                         "DS:$VIDRRD:GAUGE:180:U:U",
+                                         "RRA:MIN:0.5:1:1500",
+                                         "RRA:MIN:0.5:5:600",
+                                         "RRA:MIN:0.5:30:700",
+                                         "RRA:MIN:0.5:120:775",
+                                         "RRA:MIN:0.5:1440:797",
+                                         "RRA:AVERAGE:0.5:1:1500",
+                                         "RRA:AVERAGE:0.5:5:600",
+                                         "RRA:AVERAGE:0.5:30:700",
+                                         "RRA:AVERAGE:0.5:120:775",
+                                         "RRA:AVERAGE:0.5:1440:797",
+                                         "RRA:MAX:0.5:1:1500",
+                                         "RRA:MAX:0.5:5:600",
+                                         "RRA:MAX:0.5:30:700",
+                                         "RRA:MAX:0.5:120:775",
+                                         "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/${SENSORSFILE}.rrd";
+                            RRDs::update("$RRDDIR/${SENSORSFILE}.rrd",
+                                         "N:$in0:$in1:$in2:$in3:$in4:$in5:$in6:$in7:$in8:$fan1:$fan2:$fan3:$fan4:$fan5:$temp1:$temp2:$temp3:$temp4:$vid");
+			    $ERR=RRDs::error;
+			    if ($ERR )
+			    {
+                                print "ERROR while updating ${SENSORSFILE}.rrd: $ERR\n";
+                                rename("$RRDDIR/${SENSORSFILE}.rrd","$RRDDIR/${SENSORSFILE}.bad");
+                            }
+                            }
+                        }
+                    }
+
+                $hosts = db_get_prop(\%conf, $RRDFILE, 'hosts') || "gateway";
+                $interval = db_get_prop(\%conf, $RRDFILE, 'interval') || "0.25";
+                $count = db_get_prop(\%conf, $RRDFILE, 'count') || "20";
+
+		foreach $host (split(/,/,$hosts))
+                    {
+		    &pinghost($host, $count, $interval);
+	            }
+
+                foreach $host (split(/,/,$hosts))
+                    {
+                    if(${'pid_'.$host})
+                        {
+                        waitpid(${'pid_'.$host},0);
+                        }
+                    }
+                }
+            }
+	my $sambausernbr = `/usr/bin/smbstatus -b|grep '^[ 0-9]'|wc -l`;
+        if ( $debug eq 'debug' ) 
+	{
+            print 'sambausernbr : ' . $sambausernbr;
+        }
+
+	RRDs::create("$RRDDIR/$SAMBAUSERRRD.rrd","-s","60",
+		 "DS:$SAMBAUSER:GAUGE:180:0:U",	
+		 "RRA:MIN:0.5:1:1500",
+		 "RRA:MIN:0.5:5:600",
+		 "RRA:MIN:0.5:30:700",
+		 "RRA:MIN:0.5:120:775",
+		 "RRA:MIN:0.5:1440:797",
+		 "RRA:AVERAGE:0.5:1:1500",
+		 "RRA:AVERAGE:0.5:5:600",
+		 "RRA:AVERAGE:0.5:30:700",
+		 "RRA:AVERAGE:0.5:120:775",
+		 "RRA:AVERAGE:0.5:1440:797",
+		 "RRA:MAX:0.5:1:1500",
+		 "RRA:MAX:0.5:5:600",
+		 "RRA:MAX:0.5:30:700",
+		 "RRA:MAX:0.5:120:775",
+		 "RRA:MAX:0.5:1440:797") unless -e "$RRDDIR/$SAMBAUSERRRD.rrd";
+	RRDs::update("$RRDDIR/$SAMBAUSERRRD.rrd","N:" .trim($sambausernbr));
+        my $ERR=RRDs::error;
+	if ( $ERR )
+	{
+            print "ERROR while updating $SAMBAUSERRRD.rrd: $ERR\n";
+            rename("$RRDDIR/$SAMBAUSERRRD.rrd","$RRDDIR/$SAMBAUSERRRD.bad");
+	}
+
+	sleep(60-time%60);
+        }
+    }
+
